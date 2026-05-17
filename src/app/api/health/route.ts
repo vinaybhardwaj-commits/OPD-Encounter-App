@@ -1,15 +1,20 @@
 /**
  * GET /api/health
  *
- * M0.3 connection-test route. Probes the Neon pool, returns latency in ms,
- * the Postgres server version, and a non-secret echo of which DB host
- * pgbouncer routed us to. Used by uptime probes + sprint smoke tests.
+ * Probe Neon, return latency + server version + which migration version
+ * has been applied + count of user-defined tables. Used by uptime checks
+ * and sprint smoke tests.
  *
- * Response shape (200):
- *   { ok: true, db: { connected: true, latency_ms, server_version, host_hint }, build, now }
+ * Response (200):
+ *   {
+ *     ok: true,
+ *     db: { connected, latency_ms, server_version, host_hint },
+ *     schema: { latest_migration, total_migrations, table_count },
+ *     build: { sha, region },
+ *     now
+ *   }
  *
- * On DB failure returns 503 with { ok: false, db: { connected: false, error } }
- * so monitoring can distinguish app-up-but-DB-down from total outage.
+ * On DB failure: 503 with { ok: false, db: { connected: false, error } }
  */
 import { NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
@@ -17,58 +22,76 @@ import { pool } from '@/lib/db';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-type HealthBody = {
-  ok: boolean;
-  db: {
-    connected: boolean;
-    latency_ms?: number;
-    server_version?: string;
-    host_hint?: string;
-    error?: string;
-  };
-  build: {
-    sha: string | null;
-    region: string | null;
-  };
-  now: string;
-};
-
 export async function GET() {
   const t0 = Date.now();
-  let body: HealthBody;
 
   try {
-    const result = await pool.sql`select version() as version, inet_server_addr()::text as host`;
+    const { rows: vRows } = await pool.query<{ version: string; host: string | null }>(
+      `SELECT version() AS version, inet_server_addr()::text AS host`,
+    );
     const latency_ms = Date.now() - t0;
-    const row = (result.rows[0] || {}) as { version?: string; host?: string };
-    // server_version like "PostgreSQL 17.x on aarch64-unknown-linux-gnu ..." — keep first 50 chars
-    const server_version = (row.version || '').slice(0, 50);
-    body = {
-      ok: true,
-      db: {
-        connected: true,
-        latency_ms,
-        server_version,
-        host_hint: row.host ?? undefined,
+    const v = vRows[0] || { version: '', host: null };
+    const server_version = (v.version || '').slice(0, 50);
+
+    // Schema state — tolerant of pre-migration state
+    let latest_migration: number | null = null;
+    let total_migrations = 0;
+    let table_count = 0;
+    try {
+      const { rows } = await pool.query<{ latest: number | null; total: string }>(
+        `SELECT MAX(version) AS latest, COUNT(*)::text AS total FROM schema_migrations`,
+      );
+      latest_migration = rows[0]?.latest ?? null;
+      total_migrations = parseInt(rows[0]?.total ?? '0', 10);
+    } catch {
+      // schema_migrations not yet created
+    }
+    try {
+      const { rows } = await pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count
+         FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
+      );
+      table_count = parseInt(rows[0]?.count ?? '0', 10);
+    } catch {
+      // ignore
+    }
+
+    return NextResponse.json(
+      {
+        ok: true,
+        db: {
+          connected: true,
+          latency_ms,
+          server_version,
+          host_hint: v.host ?? undefined,
+        },
+        schema: {
+          latest_migration,
+          total_migrations,
+          table_count,
+        },
+        build: {
+          sha: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
+          region: process.env.VERCEL_REGION ?? null,
+        },
+        now: new Date().toISOString(),
       },
-      build: {
-        sha: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
-        region: process.env.VERCEL_REGION ?? null,
-      },
-      now: new Date().toISOString(),
-    };
-    return NextResponse.json(body, { status: 200 });
+      { status: 200 },
+    );
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    body = {
-      ok: false,
-      db: { connected: false, error: msg.slice(0, 200) },
-      build: {
-        sha: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
-        region: process.env.VERCEL_REGION ?? null,
+    return NextResponse.json(
+      {
+        ok: false,
+        db: { connected: false, error: msg.slice(0, 200) },
+        build: {
+          sha: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
+          region: process.env.VERCEL_REGION ?? null,
+        },
+        now: new Date().toISOString(),
       },
-      now: new Date().toISOString(),
-    };
-    return NextResponse.json(body, { status: 503 });
+      { status: 503 },
+    );
   }
 }
