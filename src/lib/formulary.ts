@@ -58,6 +58,10 @@ function mapSchedule(raw: string): DrugScheduleEnum | null {
   if (v === 'OTC' || v === 'H' || v === 'H1' || v === 'X') return v;
   if (v === 'BIOLOGICAL') return 'H1'; // vaccines + antisera — register entry required
   if (v === 'G') return 'H'; // hormones — prescription required
+  // Em-dash / hyphen / "N/A" / empty all collapse to OTC. These show up
+  // for FMCG-style items in the formulary (Vicks, ENO, sunscreens,
+  // moisturizers) — not Schedule drugs, behave like OTC at point of sale.
+  if (v === '' || v === '—' || v === '-' || v === 'N/A' || v === 'NA') return 'OTC';
   return null;
 }
 
