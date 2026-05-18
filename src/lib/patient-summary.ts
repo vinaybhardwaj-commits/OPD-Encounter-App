@@ -73,53 +73,51 @@ export async function buildSummaryInput(patientId: string): Promise<SummaryInput
   const demographics = pRows[0];
   if (!demographics) return null;
 
-  // Past-12-months OR past-10 encounters: union and dedupe by id.
-  // Cheaper to compute server-side as one query with a UNION.
-  const { rows: encRows } = await pool.query<EncounterForPrompt & { id: string }>(
-    `WITH base AS (
-       SELECT e.id, e.encounter_number,
-              e.encounter_date::text AS encounter_date,
-              e.chief_complaint_chips, e.chief_complaint_text,
-              e.exam_findings, e.assessment_codes, e.assessment_text,
-              e.disposition::text AS disposition,
-              e.follow_up_days, e.referral_target,
-              p.lines AS prescription_lines,
-              e.completed_at
-         FROM encounters e
-         LEFT JOIN prescriptions p ON p.encounter_id = e.id
-        WHERE e.patient_id = $1
-          AND e.status = 'completed'
-     )
-     SELECT * FROM (
-       (SELECT id, encounter_number, encounter_date,
-               chief_complaint_chips, chief_complaint_text,
-               exam_findings, assessment_codes, assessment_text,
-               disposition, follow_up_days, referral_target,
-               prescription_lines, completed_at
-          FROM base
-         WHERE encounter_date >= (CURRENT_DATE - INTERVAL '365 days')
-         ORDER BY encounter_date DESC, completed_at DESC)
-       UNION
-       (SELECT id, encounter_number, encounter_date,
-               chief_complaint_chips, chief_complaint_text,
-               exam_findings, assessment_codes, assessment_text,
-               disposition, follow_up_days, referral_target,
-               prescription_lines, completed_at
-          FROM base
-         ORDER BY encounter_date DESC, completed_at DESC
-         LIMIT 10)
-     ) merged
-     ORDER BY encounter_date DESC, completed_at DESC`,
+  // Past 10 completed encounters OR everything from past 12 months,
+  // whichever is broader. Postgres UNION over JSONB needs special handling
+  // (JSONB doesn't define a hashable equality for set-dedup in all cases),
+  // so we just pull the broader bucket — 12 months OR top 10 — with a
+  // GREATEST clause via two passes in app code. For 25 seed patients
+  // this is trivially small; revisit if patient history ever exceeds a
+  // few dozen encounters.
+  const { rows: encRows } = await pool.query<EncounterForPrompt & { id: string; completed_at: string | null }>(
+    `SELECT e.id, e.encounter_number,
+            e.encounter_date::text AS encounter_date,
+            e.chief_complaint_chips, e.chief_complaint_text,
+            e.exam_findings, e.assessment_codes, e.assessment_text,
+            e.disposition::text AS disposition,
+            e.follow_up_days, e.referral_target,
+            p.lines AS prescription_lines,
+            e.completed_at
+       FROM encounters e
+       LEFT JOIN prescriptions p ON p.encounter_id = e.id
+      WHERE e.patient_id = $1
+        AND e.status = 'completed'
+      ORDER BY e.encounter_date DESC, e.completed_at DESC
+      LIMIT 40`,
     [patientId],
   );
 
+  // Of those, keep all rows in the last 365 days OR the first 10, whichever
+  // bucket is larger.
+  const cutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  const last12Months = encRows.filter((r) => r.encounter_date >= cutoff);
+  const top10 = encRows.slice(0, 10);
+  const keep = last12Months.length >= top10.length ? last12Months : top10;
+  // Re-slice encRows to the chosen set, preserving order.
+  // (We can't reassign const, so build a new array.)
+  const keepIds = new Set(keep.map((r) => r.id));
+  const filtered = encRows.filter((r) => keepIds.has(r.id));
+
   // Compute window bounds. If no completed encounters, return empty window.
-  const dates = encRows.map((r) => r.encounter_date).filter(Boolean);
+  const dates = filtered.map((r) => r.encounter_date).filter(Boolean);
   const window_end = dates[0] ?? new Date().toISOString().slice(0, 10);
   const window_start = dates[dates.length - 1] ?? window_end;
 
   // Strip the `id` and `completed_at` helper columns from the payload.
-  const encounters: EncounterForPrompt[] = encRows.map((r) => ({
+  const encounters: EncounterForPrompt[] = filtered.map((r) => ({
     encounter_number: r.encounter_number,
     encounter_date: r.encounter_date,
     chief_complaint_chips: r.chief_complaint_chips,
