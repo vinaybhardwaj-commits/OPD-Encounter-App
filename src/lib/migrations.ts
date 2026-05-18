@@ -289,6 +289,51 @@ export const MIGRATIONS: Migration[] = [
         ALTER COLUMN audio_blob_url DROP NOT NULL;
     `,
   },
+  {
+    version: 5,
+    name: 'patient_summaries',
+    sql: `
+      -- PH.1: cached Qwen output per patient. One row per patient, one
+      -- JSONB blob holding the whole summary. Recomputed post-encounter-
+      -- submit + on-demand from /patients/[id].
+      CREATE TABLE IF NOT EXISTS patient_summaries (
+        patient_id UUID PRIMARY KEY REFERENCES patients(id) ON DELETE CASCADE,
+        summary JSONB NOT NULL,
+        source_encounter_count INT NOT NULL,
+        source_window_start DATE NOT NULL,
+        source_window_end DATE NOT NULL,
+        qwen_model TEXT NOT NULL,
+        qwen_latency_ms INT,
+        computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status TEXT NOT NULL DEFAULT 'fresh',
+        fail_reason TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_patient_summaries_status
+        ON patient_summaries(status) WHERE status != 'fresh';
+    `,
+  },
+  {
+    version: 6,
+    name: 'qwen_call_audit',
+    sql: `
+      -- PH.1: per-call audit. Hashes only — no raw PHI in logs (Round 5
+      -- decision). Replay debug works by re-running with the same
+      -- input window.
+      CREATE TABLE IF NOT EXISTS qwen_call_audit (
+        id BIGSERIAL PRIMARY KEY,
+        patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+        doctor_id UUID REFERENCES doctors(id),
+        prompt_hash TEXT NOT NULL,
+        output_hash TEXT NOT NULL,
+        qwen_model TEXT NOT NULL,
+        qwen_latency_ms INT,
+        result TEXT NOT NULL,
+        called_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_qwen_call_audit_patient
+        ON qwen_call_audit(patient_id, called_at DESC);
+    `,
+  },
 ];
 
 /**
