@@ -57,6 +57,9 @@ const DEMO_PINK = rgb(0xF9 / 255, 0x6E / 255, 0xB1 / 255);
 export async function generatePrescriptionPdf(
   input: PrescriptionPdfInput,
 ): Promise<Uint8Array> {
+  // Sanitise every user-text field once at the boundary so downstream
+  // drawText calls don't need to remember.
+  input = sanitiseInput(input);
   const pdf = await PDFDocument.create();
   pdf.setTitle(`${input.prescription.prescription_number} — ${input.patient.name}`);
   pdf.setAuthor('Even Hospital · OPD Encounter App');
@@ -104,7 +107,7 @@ export async function generatePrescriptionPdf(
   }
   if (input.patient.known_allergies) {
     y -= 4;
-    page.drawText(`⚠ Allergies: ${input.patient.known_allergies}`, {
+    page.drawText(`Allergies: ${input.patient.known_allergies}`, {
       x: M.l, y, size: 9, font: bold, color: DEMO_PINK,
     });
     y -= 14;
@@ -135,7 +138,7 @@ export async function generatePrescriptionPdf(
     if (v.hr != null) parts.push(`HR ${v.hr} bpm`);
     if (v.rr != null) parts.push(`RR ${v.rr}/min`);
     if (v.temp_c != null) parts.push(`Temp ${v.temp_c}°C`);
-    if (v.spo2 != null) parts.push(`SpO₂ ${v.spo2}%`);
+    if (v.spo2 != null) parts.push(`SpO2 ${v.spo2}%`);
     y = drawWrapped(page, reg, M.l, y, W - M.r - M.l, parts.join('  ·  '), 9, INK_700);
     y -= 8;
   }
@@ -155,7 +158,7 @@ export async function generatePrescriptionPdf(
     y = drawSectionLabel(page, bold, M.l, y, 'ASSESSMENT');
     if (input.encounter.assessment_codes && input.encounter.assessment_codes.length > 0) {
       const lines = input.encounter.assessment_codes.map(
-        (c) => `${c} — ${lookupIcd10(c) ?? '—'}`,
+        (c) => `${c} - ${lookupIcd10(c) ?? '-'}`,
       );
       for (const l of lines) {
         y = drawWrapped(page, reg, M.l, y, W - M.r - M.l, l, 9, EVEN_BLUE);
@@ -194,13 +197,13 @@ export async function generatePrescriptionPdf(
         y -= 11;
       }
       if (line.schedule_dc === 'X') {
-        page.drawText('   ⚠ Schedule X — narcotic / psychotropic. License number on dispense.', {
+        page.drawText('   Schedule X - narcotic / psychotropic. License number on dispense.', {
           x: M.l, y, size: 8, font: bold, color: DEMO_PINK,
         });
         y -= 10;
       }
       if (line.is_high_risk) {
-        page.drawText('   ⚠ High-alert medication (ISMP). Verify dose + route.', {
+        page.drawText('   High-alert medication (ISMP). Verify dose + route.', {
           x: M.l, y, size: 8, font: bold, color: DEMO_PINK,
         });
         y -= 10;
@@ -310,6 +313,63 @@ function drawRightText(
  * Word-wraps text to fit `maxWidth` at `size`, drawing each line in
  * sequence. Returns the final y after the last line.
  */
+/**
+ * Replace Unicode chars not in Helvetica's WinAnsi codepage with ASCII
+ * equivalents. Helvetica only encodes Latin-1 (0x20-0xFF + a few extras);
+ * em dashes, curly quotes, ellipsis, and warning glyphs all fall through.
+ * Bundling a Unicode font would also work but adds ~300KB to the function
+ * cold-start size, so for v1 we sanitise.
+ */
+function sanitiseInput(input: PrescriptionPdfInput): PrescriptionPdfInput {
+  const s = (v: string | null | undefined) => (v == null ? v : sanitize(v));
+  return {
+    ...input,
+    encounter: {
+      ...input.encounter,
+      chief_complaint_text: s(input.encounter.chief_complaint_text) ?? null,
+      chief_complaint_chips:
+        input.encounter.chief_complaint_chips?.map(sanitize) ?? null,
+      exam_findings: s(input.encounter.exam_findings) ?? null,
+      assessment_text: s(input.encounter.assessment_text) ?? null,
+      referral_target: s(input.encounter.referral_target) ?? null,
+    },
+    patient: {
+      ...input.patient,
+      name: sanitize(input.patient.name),
+      known_allergies: s(input.patient.known_allergies) ?? null,
+    },
+    doctor: {
+      ...input.doctor,
+      name: sanitize(input.doctor.name),
+    },
+    prescription: {
+      ...input.prescription,
+      lines: input.prescription.lines.map((l) => ({
+        ...l,
+        brand_name: sanitize(l.brand_name),
+        generic_name: sanitize(l.generic_name),
+        dosage_form: sanitize(l.dosage_form),
+        strength: l.strength ? sanitize(l.strength) : null,
+        instructions: sanitize(l.instructions ?? ''),
+      })),
+    },
+  };
+}
+
+function sanitize(text: string): string {
+  return text
+    .replace(/[—–]/g, '-')        // em dash, en dash → hyphen
+    .replace(/[‘’]/g, "'")        // curly single quotes
+    .replace(/[“”]/g, '"')        // curly double quotes
+    .replace(/…/g, '...')              // horizontal ellipsis
+    .replace(/[⚠✓✗]/g, '')   // warning, check, ballot
+    .replace(/[ ]/g, ' ')              // nbsp
+    // Subscript/superscript digits → ASCII digits
+    .replace(/[₀-₉]/g, (c) => String(c.charCodeAt(0) - 0x2080))
+    .replace(/[²³¹]/g, (c) =>
+      ({ '²': '2', '³': '3', '¹': '1' }[c] ?? c));
+}
+
 function drawWrapped(
   page: PDFPage,
   font: PDFFont,
@@ -320,6 +380,7 @@ function drawWrapped(
   size: number,
   color: ReturnType<typeof rgb>,
 ): number {
+  text = sanitize(text);
   const words = text.split(/\s+/);
   let line = '';
   for (const w of words) {
