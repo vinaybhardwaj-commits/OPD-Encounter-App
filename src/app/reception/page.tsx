@@ -18,6 +18,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
 import { pool } from '@/lib/db';
 import { PatientSearch } from '@/components/PatientSearch';
+import { RegisterPatientModal } from '@/components/RegisterPatientModal';
 import { actionMarkDiagnosticReady } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -227,16 +228,18 @@ export default async function ReceptionPage() {
               Register a patient
             </p>
             <p className="text-xs text-even-ink-600">
-              Walk-ins or scheduled — full register flow ships in v2.0.3.2.
+              Walk-ins or scheduled. Search by phone / name / MRN, or
+              fill in fresh details for a new patient.
             </p>
           </div>
-          <button
-            type="button"
-            disabled
-            className="rounded-lg bg-even-blue px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            + Register patient
-          </button>
+          <RegisterPatientModal
+            rooms={roomList.map((r) => ({
+              id: r.room_id,
+              name: r.room_name,
+              doctor_name: r.doctor_name,
+              queue_count: r.encounters.length,
+            }))}
+          />
         </div>
 
         {/* Per-room queue grid */}
