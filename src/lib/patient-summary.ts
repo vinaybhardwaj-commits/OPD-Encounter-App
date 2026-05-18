@@ -23,8 +23,10 @@
  * fields, and the audit row records a 'schema_violation' result.
  */
 
+import { createHash } from 'node:crypto';
 import { pool } from '@/lib/db';
 import { CC_CHIPS } from '@/lib/cc-chips';
+import { qwenJson, QwenError, QWEN_MODEL } from '@/lib/qwen';
 
 // -----------------------------------------------------------------------------
 // Input gathering
@@ -278,5 +280,229 @@ export function validateSummary(raw: unknown): ValidationResult {
       disposition_additions,
       red_flags,
     },
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Core recompute — called by the API route + the admin backfill action.
+// -----------------------------------------------------------------------------
+
+export type RecomputeOutcome =
+  | { ok: true; latency_ms: number; encounter_count: number; window: { start: string; end: string } }
+  | { ok: false; reason: string; detail?: string };
+
+const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
+
+async function writeQwenAudit(args: {
+  patient_id: string;
+  doctor_id: string | null;
+  prompt: string;
+  output: string;
+  latency_ms: number | null;
+  result:
+    | 'success'
+    | 'parse_error'
+    | 'timeout'
+    | 'schema_violation'
+    | 'http_error'
+    | 'network'
+    | 'patient_not_found';
+}): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO qwen_call_audit
+         (patient_id, doctor_id, prompt_hash, output_hash, qwen_model, qwen_latency_ms, result)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        args.patient_id,
+        args.doctor_id,
+        sha256(args.prompt),
+        sha256(args.output ?? ''),
+        QWEN_MODEL,
+        args.latency_ms,
+        args.result,
+      ],
+    );
+  } catch {
+    /* swallow */
+  }
+}
+
+/**
+ * Recompute the summary for one patient. Upserts `patient_summaries`,
+ * writes a `qwen_call_audit` row, returns a structured outcome.
+ *
+ * Used by:
+ *   - POST /api/internal/recompute-summary (HTTP wrapper)
+ *   - Admin "Backfill all summaries" server action (direct call)
+ *   - (future PH.1.x) the post-/complete hook on encounter submit
+ *
+ * Never throws — Qwen failures become { ok: false, reason: ... } and
+ * the patient_summaries row is left with status='failed' + fail_reason.
+ */
+export async function recomputePatientSummary(args: {
+  patientId: string;
+  doctorId: string | null;
+}): Promise<RecomputeOutcome> {
+  const { patientId, doctorId } = args;
+
+  const bundle = await buildSummaryInput(patientId);
+  if (!bundle) {
+    return { ok: false, reason: 'patient_not_found' };
+  }
+
+  // Mark as computing for observability.
+  await pool.query(
+    `INSERT INTO patient_summaries
+       (patient_id, summary, source_encounter_count, source_window_start, source_window_end, qwen_model, status)
+     VALUES ($1, '{}'::jsonb, $2, $3, $4, $5, 'computing')
+     ON CONFLICT (patient_id) DO UPDATE SET status='computing'`,
+    [patientId, bundle.encounters.length, bundle.window_start, bundle.window_end, QWEN_MODEL],
+  );
+
+  const userMessage = buildSummaryUserMessage(bundle);
+
+  let qwenLatency: number | null = null;
+  try {
+    const result = await qwenJson<unknown>(SUMMARY_SYSTEM_PROMPT, userMessage);
+    qwenLatency = result.latency_ms;
+
+    const v = validateSummary(result.json);
+    if (!v.ok) {
+      await writeQwenAudit({
+        patient_id: patientId,
+        doctor_id: doctorId,
+        prompt: userMessage,
+        output: result.raw,
+        latency_ms: qwenLatency,
+        result: 'schema_violation',
+      });
+      await pool.query(
+        `UPDATE patient_summaries
+            SET status='failed', fail_reason=$2, qwen_latency_ms=$3
+          WHERE patient_id=$1`,
+        [patientId, `schema_violation:${v.reason}`, qwenLatency],
+      );
+      return { ok: false, reason: 'schema_violation', detail: v.reason };
+    }
+
+    await pool.query(
+      `INSERT INTO patient_summaries
+         (patient_id, summary, source_encounter_count, source_window_start,
+          source_window_end, qwen_model, qwen_latency_ms, computed_at, status, fail_reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), 'fresh', NULL)
+       ON CONFLICT (patient_id) DO UPDATE SET
+         summary = EXCLUDED.summary,
+         source_encounter_count = EXCLUDED.source_encounter_count,
+         source_window_start = EXCLUDED.source_window_start,
+         source_window_end = EXCLUDED.source_window_end,
+         qwen_model = EXCLUDED.qwen_model,
+         qwen_latency_ms = EXCLUDED.qwen_latency_ms,
+         computed_at = NOW(),
+         status = 'fresh',
+         fail_reason = NULL`,
+      [
+        patientId,
+        JSON.stringify(v.value),
+        bundle.encounters.length,
+        bundle.window_start,
+        bundle.window_end,
+        QWEN_MODEL,
+        qwenLatency,
+      ],
+    );
+
+    await writeQwenAudit({
+      patient_id: patientId,
+      doctor_id: doctorId,
+      prompt: userMessage,
+      output: result.raw,
+      latency_ms: qwenLatency,
+      result: 'success',
+    });
+
+    return {
+      ok: true,
+      latency_ms: qwenLatency,
+      encounter_count: bundle.encounters.length,
+      window: { start: bundle.window_start, end: bundle.window_end },
+    };
+  } catch (e: unknown) {
+    const isQwenErr = e instanceof QwenError;
+    const auditResult: 'parse_error' | 'timeout' | 'http_error' | 'network' = isQwenErr
+      ? e.kind === 'timeout'
+        ? 'timeout'
+        : e.kind === 'http'
+          ? 'http_error'
+          : e.kind === 'parse_error'
+            ? 'parse_error'
+            : 'network'
+      : 'network';
+    const reason = e instanceof Error ? e.message : 'unknown';
+
+    await writeQwenAudit({
+      patient_id: patientId,
+      doctor_id: doctorId,
+      prompt: userMessage,
+      output: '',
+      latency_ms: qwenLatency,
+      result: auditResult,
+    });
+    await pool.query(
+      `UPDATE patient_summaries
+          SET status='failed', fail_reason=$2, qwen_latency_ms=$3
+        WHERE patient_id=$1`,
+      [patientId, `${auditResult}:${reason.slice(0, 200)}`, qwenLatency],
+    );
+
+    return { ok: false, reason: auditResult, detail: reason };
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Backfill status (PH.1.3)
+// -----------------------------------------------------------------------------
+
+export type SummaryBackfillStatus = {
+  eligible: number;    // patients with ≥1 completed encounter
+  fresh: number;       // up-to-date summaries
+  computing: number;   // mid-run (rare)
+  failed: number;      // last attempt errored
+  missing: number;     // no row at all
+  remaining: number;   // eligible - fresh
+};
+
+export async function getSummaryBackfillStatus(): Promise<SummaryBackfillStatus> {
+  const { rows } = await pool.query<{
+    eligible: string;
+    fresh: string;
+    computing: string;
+    failed: string;
+    missing: string;
+  }>(
+    `WITH eligible_patients AS (
+       SELECT DISTINCT patient_id
+         FROM encounters
+        WHERE status = 'completed'
+     )
+     SELECT
+       COUNT(*)::text AS eligible,
+       COUNT(*) FILTER (WHERE s.status = 'fresh')::text AS fresh,
+       COUNT(*) FILTER (WHERE s.status = 'computing')::text AS computing,
+       COUNT(*) FILTER (WHERE s.status = 'failed')::text AS failed,
+       COUNT(*) FILTER (WHERE s.patient_id IS NULL)::text AS missing
+     FROM eligible_patients e
+     LEFT JOIN patient_summaries s ON s.patient_id = e.patient_id`,
+  );
+  const r = rows[0] ?? { eligible: '0', fresh: '0', computing: '0', failed: '0', missing: '0' };
+  const eligible = parseInt(r.eligible, 10);
+  const fresh = parseInt(r.fresh, 10);
+  return {
+    eligible,
+    fresh,
+    computing: parseInt(r.computing, 10),
+    failed: parseInt(r.failed, 10),
+    missing: parseInt(r.missing, 10),
+    remaining: Math.max(0, eligible - fresh),
   };
 }

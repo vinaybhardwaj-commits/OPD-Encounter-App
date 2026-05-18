@@ -18,15 +18,27 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentDoctor } from '@/lib/auth';
 import { getDemoStatus } from '@/lib/seed';
-import { actionReset, actionAddWalkIn, actionMarkReady } from './actions';
+import { getSummaryBackfillStatus } from '@/lib/patient-summary';
+import {
+  actionReset,
+  actionAddWalkIn,
+  actionMarkReady,
+  actionBackfillSummaries,
+} from './actions';
 
 export const dynamic = 'force-dynamic';
+// PH.1.3: backfill action runs up to 6 patients × ~44s Qwen latency,
+// well above the default 60s segment timeout.
+export const maxDuration = 300;
 
 export default async function DemoControlsPage() {
   const session = await getCurrentDoctor();
   if (!session) redirect('/auth/login');
 
-  const status = await getDemoStatus(session.email);
+  const [status, backfill] = await Promise.all([
+    getDemoStatus(session.email),
+    getSummaryBackfillStatus(),
+  ]);
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
@@ -135,6 +147,33 @@ export default async function DemoControlsPage() {
                 </li>
               ))}
             </ul>
+          )}
+        </ControlCard>
+
+        {/* Backfill Qwen summaries (PH.1.3) */}
+        <ControlCard
+          title="Backfill patient summaries"
+          description="Computes the Qwen summary for every patient who has at least one completed encounter. Each click processes up to 6 patients at warm-Qwen latency (~5-15s each). Click again until 0 remain. Already-fresh patients are skipped."
+        >
+          <div className="mb-3 grid grid-cols-4 gap-3 text-sm">
+            <Stat label="Eligible"  value={backfill.eligible} />
+            <Stat label="Fresh"     value={backfill.fresh} />
+            <Stat label="Failed"    value={backfill.failed} />
+            <Stat label="Remaining" value={backfill.remaining} />
+          </div>
+          {backfill.remaining === 0 ? (
+            <p className="rounded-md border border-even-blue-100 bg-even-blue-50 px-3 py-2 text-xs text-even-navy">
+              All {backfill.eligible} eligible patients have a fresh summary.
+            </p>
+          ) : (
+            <form action={actionBackfillSummaries}>
+              <button
+                type="submit"
+                className="rounded-lg border border-even-blue-300 bg-even-blue-50 px-4 py-2 text-sm font-semibold text-even-blue-800 transition hover:border-even-blue-500 hover:bg-even-blue-100"
+              >
+                ▶ Backfill next batch ({Math.min(6, backfill.remaining)})
+              </button>
+            </form>
           )}
         </ControlCard>
 
