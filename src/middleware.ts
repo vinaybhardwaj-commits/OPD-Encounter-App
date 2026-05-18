@@ -50,5 +50,5 @@ export async function middleware(req: NextRequest) {
 // can hit the demo-controls panel. Production will introduce an admin
 // role check.
 export const config = {
-  matcher: ['/dashboard/:path*', '/admin/:path*'],
+  matcher: ['/dashboard/:path*', '/admin/:path*', '/patients/:path*'],
 };
