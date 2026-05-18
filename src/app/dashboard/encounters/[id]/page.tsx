@@ -120,7 +120,13 @@ export default async function EncounterPage({
         </div>
 
         <EncounterEditor
-          patientName={row.patient_name}
+          patient={{
+            name: row.patient_name,
+            mrn: row.patient_mrn,
+            age_years: row.patient_age_years,
+            sex: row.patient_sex,
+            phone_e164: row.patient_phone_e164,
+          }}
           initial={{
             id: row.id,
             encounter_number: row.encounter_number,

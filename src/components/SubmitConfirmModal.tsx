@@ -14,7 +14,7 @@
  * The doctor only sees one confirmation. If either step fails the modal
  * surfaces the error and stays open so the doctor can retry.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { lookupIcd10 } from '@/lib/icd10';
 import type { PrescriptionLine } from './DrugRow';
@@ -34,7 +34,6 @@ export type SubmitConfirmModalProps = {
     text: string | null;
     codes: string[];
   };
-  prescription_lines: PrescriptionLine[];
   disposition: string | null;
   follow_up_days: number | null;
   referral_target: string | null;
@@ -48,7 +47,6 @@ export function SubmitConfirmModal({
   encounterId,
   patient,
   assessment,
-  prescription_lines,
   disposition,
   follow_up_days,
   referral_target,
@@ -60,6 +58,29 @@ export function SubmitConfirmModal({
     pdf_blob_url: string;
     mode: string;
   } | null>(null);
+  const [prescription_lines, setPrescriptionLines] = useState<PrescriptionLine[]>([]);
+  const [loadingRx, setLoadingRx] = useState(false);
+
+  // Fetch the live prescription state every time the modal opens.
+  // The PrescriptionCompose's debounced auto-save has usually flushed
+  // by now, but reading from the server guarantees the preview matches
+  // what /dispatch will actually serialize into the PDF.
+  useEffect(() => {
+    if (!open) return;
+    setLoadingRx(true);
+    setPhase('preview');
+    setError(null);
+    setDispatchInfo(null);
+    fetch(`/api/encounters/${encounterId}/prescription`)
+      .then((r) => r.json())
+      .then((j: { ok?: boolean; prescription?: { lines?: PrescriptionLine[] } | null }) => {
+        if (j.ok) setPrescriptionLines(j.prescription?.lines ?? []);
+      })
+      .catch(() => {
+        /* fall back to empty; the dispatch endpoint will still find DB-side lines */
+      })
+      .finally(() => setLoadingRx(false));
+  }, [open, encounterId]);
 
   if (!open) return null;
 
@@ -203,7 +224,11 @@ export function SubmitConfirmModal({
                   Prescription · {prescription_lines.length}{' '}
                   {prescription_lines.length === 1 ? 'drug' : 'drugs'}
                 </p>
-                {prescription_lines.length === 0 ? (
+                {loadingRx ? (
+                  <p className="mt-1 text-xs italic text-even-ink-400">
+                    Loading…
+                  </p>
+                ) : prescription_lines.length === 0 ? (
                   <p className="mt-1 text-xs italic text-even-ink-500">
                     No drugs on the prescription — advice-only PDF.
                   </p>

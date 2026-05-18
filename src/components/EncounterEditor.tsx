@@ -28,6 +28,7 @@ import type { PrescriptionLine } from './DrugRow';
 import { AmbientRecorder } from './AmbientRecorder';
 import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewer';
 import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
+import { SubmitConfirmModal } from './SubmitConfirmModal';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -79,12 +80,20 @@ const DISPOSITIONS: { value: Disposition; label: string; hint: string }[] = [
   { value: 'vaccinate', label: 'Vaccinate', hint: 'Routine immunisation.' },
 ];
 
+export type EncounterPatient = {
+  name: string;
+  mrn: string;
+  age_years: number;
+  sex: string;
+  phone_e164: string | null;
+};
+
 export function EncounterEditor({
   initial,
-  patientName,
+  patient,
 }: {
   initial: EncounterEditable;
-  patientName: string;
+  patient: EncounterPatient;
 }) {
   const router = useRouter();
   const readOnly = initial.status === 'completed';
@@ -92,6 +101,7 @@ export function EncounterEditor({
   const canSendToDiagnostics =
     initial.status === 'active' || initial.status === 'ready_to_resume';
   const [diagModalOpen, setDiagModalOpen] = useState(false);
+  const [confirmModalOpen, setConfirmModalOpen] = useState(false);
 
   const [ccChips, setCcChips] = useState<string[]>(initial.chief_complaint_chips ?? []);
   const [cc, setCc] = useState(initial.chief_complaint_text ?? '');
@@ -181,7 +191,9 @@ export function EncounterEditor({
     setSubmitting(true);
     setSubmitError(null);
     try {
-      // Flush any pending save first
+      // Flush any pending save before opening the confirm modal — the
+      // modal's /complete + /dispatch chain reads server-side state, so
+      // we want everything persisted first.
       if (saveState === 'dirty' || saveState === 'saving') {
         await fetch(`/api/encounters/${initial.id}`, {
           method: 'PATCH',
@@ -189,16 +201,7 @@ export function EncounterEditor({
           body: JSON.stringify(buildBody()),
         });
       }
-      const res = await fetch(`/api/encounters/${initial.id}/complete`, {
-        method: 'POST',
-      });
-      const j = (await res.json()) as { ok?: boolean; error?: string; detail?: string };
-      if (!res.ok || !j.ok) {
-        setSubmitError(j.detail ?? j.error ?? 'Could not finish encounter.');
-        return;
-      }
-      router.push('/dashboard');
-      router.refresh();
+      setConfirmModalOpen(true);
     } catch {
       setSubmitError('Network error. Try again.');
     } finally {
@@ -508,9 +511,29 @@ export function EncounterEditor({
 
       <SendToDiagnosticsModal
         encounterId={initial.id}
-        patientName={patientName}
+        patientName={patient.name}
         open={diagModalOpen}
         onClose={() => setDiagModalOpen(false)}
+      />
+
+      <SubmitConfirmModal
+        open={confirmModalOpen}
+        onClose={() => setConfirmModalOpen(false)}
+        encounterId={initial.id}
+        patient={{
+          name: patient.name,
+          age_years: patient.age_years,
+          sex: patient.sex,
+          mrn: patient.mrn,
+          phone_e164: patient.phone_e164,
+        }}
+        assessment={{
+          text: assessment || null,
+          codes: assessmentCodes,
+        }}
+        disposition={disposition}
+        follow_up_days={typeof followUpDays === 'number' ? followUpDays : null}
+        referral_target={referralTarget || null}
       />
     </div>
   );
