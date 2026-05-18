@@ -9,7 +9,6 @@
  *
  * Public surface — not in middleware's matcher, no auth needed.
  */
-import { redirect } from 'next/navigation';
 import { pool } from '@/lib/db';
 import { acceptInviteAction } from './actions';
 
@@ -143,7 +142,3 @@ function InviteError({ reason }: { reason: 'not_found' | 'expired' | 'already_us
   );
 }
 
-// also called by the server action to redirect non-existent invites
-export function _redirectMissing() {
-  redirect('/auth/login');
-}
