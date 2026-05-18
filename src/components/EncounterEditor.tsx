@@ -19,6 +19,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { CC_CHIPS } from '@/lib/cc-chips';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -47,9 +48,11 @@ export type EncounterEditable = {
     | 'completed';
   started_at: string;
   pending_diagnostic_test: string | null;
+  chief_complaint_chips: string[] | null;
   chief_complaint_text: string | null;
   exam_findings: string | null;
   vitals: Vitals | null;
+  assessment_codes: string[] | null;
   assessment_text: string | null;
   disposition: Disposition | null;
   follow_up_days: number | null;
@@ -72,8 +75,10 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
   const readOnly = initial.status === 'completed';
   const submitGated = initial.status === 'paused_diagnostics';
 
+  const [ccChips, setCcChips] = useState<string[]>(initial.chief_complaint_chips ?? []);
   const [cc, setCc] = useState(initial.chief_complaint_text ?? '');
   const [exam, setExam] = useState(initial.exam_findings ?? '');
+  const [assessmentCodes, setAssessmentCodes] = useState<string[]>(initial.assessment_codes ?? []);
   const [assessment, setAssessment] = useState(initial.assessment_text ?? '');
   const [vitals, setVitals] = useState<Vitals>(initial.vitals ?? {});
   const [disposition, setDisposition] = useState<Disposition | null>(initial.disposition);
@@ -109,15 +114,17 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
       if (v !== '' && v !== undefined && v !== null) cleanVitals[k] = v;
     });
     return {
+      chief_complaint_chips: ccChips.length > 0 ? ccChips : null,
       chief_complaint_text: cc || null,
       exam_findings: exam || null,
       vitals: Object.keys(cleanVitals).length > 0 ? cleanVitals : null,
+      assessment_codes: assessmentCodes.length > 0 ? assessmentCodes : null,
       assessment_text: assessment || null,
       disposition: disposition,
       follow_up_days: disposition === 'follow_up' && followUpDays !== '' ? Number(followUpDays) : null,
       referral_target: disposition === 'refer' ? referralTarget || null : null,
     };
-  }, [cc, exam, assessment, vitals, disposition, followUpDays, referralTarget]);
+  }, [ccChips, cc, exam, assessmentCodes, assessment, vitals, disposition, followUpDays, referralTarget]);
 
   // Debounced auto-save
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -148,7 +155,7 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [cc, exam, assessment, vitals, disposition, followUpDays, referralTarget, initial.id, readOnly, buildBody]);
+  }, [ccChips, cc, exam, assessmentCodes, assessment, vitals, disposition, followUpDays, referralTarget, initial.id, readOnly, buildBody]);
 
   async function onSubmit() {
     if (readOnly || submitting || submitGated || !disposition) return;
@@ -226,14 +233,23 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
         </div>
       )}
 
-      <Section label="Chief complaint" desc="What the patient is here for. Sprint 3 adds chip shortcuts + dictation.">
+      <Section label="Chief complaint" desc="Tap chips for the common shortcuts. Add detail in the textarea.">
+        <CcChipGrid
+          selected={ccChips}
+          onToggle={(label) =>
+            setCcChips((cur) =>
+              cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label],
+            )
+          }
+          readOnly={readOnly}
+        />
         <textarea
           value={cc}
           onChange={(e) => setCc(e.target.value)}
           disabled={readOnly}
           rows={2}
           placeholder="e.g., Sore throat 3 days, low-grade fever"
-          className={textareaCls}
+          className={`mt-3 ${textareaCls}`}
         />
       </Section>
 
@@ -259,7 +275,32 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
         />
       </Section>
 
-      <Section label="Assessment" desc="Impression. Sprint 3 adds ICD-10 typeahead.">
+      <Section label="Assessment" desc="Impression + ICD-10 codes.">
+        {assessmentCodes.length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-2">
+            {assessmentCodes.map((code) => (
+              <span
+                key={code}
+                className="inline-flex items-center gap-1 rounded-full bg-even-blue-50 px-2.5 py-1 text-[11px] font-medium text-even-blue-800 ring-1 ring-even-blue-200"
+              >
+                <span className="font-mono">{code}</span>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={() => setAssessmentCodes((cur) => cur.filter((c) => c !== code))}
+                    aria-label={`Remove ${code}`}
+                    className="rounded-full text-even-blue-500 hover:text-even-pink-700"
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
+        <p className="mb-2 text-[11px] text-even-ink-400">
+          ICD-10 typeahead ships in M3.2 — for now, codes appear here when picked.
+        </p>
         <textarea
           value={assessment}
           onChange={(e) => setAssessment(e.target.value)}
@@ -393,6 +434,55 @@ function Section({
         {desc && <p className="text-[11px] text-even-ink-400">{desc}</p>}
       </div>
       {children}
+    </div>
+  );
+}
+
+function CcChipGrid({
+  selected,
+  onToggle,
+  readOnly,
+}: {
+  selected: string[];
+  onToggle: (label: string) => void;
+  readOnly?: boolean;
+}) {
+  const sel = new Set(selected);
+  const buckets = [
+    { name: 'Acute', cat: 'acute' as const },
+    { name: 'Follow-up', cat: 'chronic' as const },
+    { name: 'Routine', cat: 'routine' as const },
+  ];
+  return (
+    <div className="space-y-3 rounded-xl border border-even-ink-100 bg-even-ink-50/40 p-3">
+      {buckets.map((b) => (
+        <div key={b.cat}>
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-even-ink-500">
+            {b.name}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {CC_CHIPS.filter((c) => c.category === b.cat).map((c) => {
+              const on = sel.has(c.label);
+              return (
+                <button
+                  key={c.label}
+                  type="button"
+                  disabled={readOnly}
+                  onClick={() => onToggle(c.label)}
+                  aria-pressed={on}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed ${
+                    on
+                      ? 'bg-even-blue text-white shadow-sm'
+                      : 'bg-white text-even-navy ring-1 ring-even-ink-200 hover:ring-even-blue-300'
+                  }`}
+                >
+                  {c.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

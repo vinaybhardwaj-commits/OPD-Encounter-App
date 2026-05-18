@@ -32,9 +32,11 @@ type EncounterFull = {
   completed_at: string | null;
   paused_reason: string | null;
   pending_diagnostic_test: string | null;
+  chief_complaint_chips: string[] | null;
   chief_complaint_text: string | null;
   exam_findings: string | null;
   vitals: Record<string, unknown> | null;
+  assessment_codes: string[] | null;
   assessment_text: string | null;
   disposition: string | null;
   follow_up_days: number | null;
@@ -51,8 +53,11 @@ async function loadEncounterIfOwned(
             e.encounter_date::text AS encounter_date,
             e.status::text AS status,
             e.started_at, e.completed_at, e.paused_reason,
-            e.pending_diagnostic_test, e.chief_complaint_text, e.exam_findings,
-            e.vitals, e.assessment_text, e.disposition::text AS disposition,
+            e.pending_diagnostic_test,
+            e.chief_complaint_chips, e.chief_complaint_text,
+            e.exam_findings, e.vitals,
+            e.assessment_codes, e.assessment_text,
+            e.disposition::text AS disposition,
             e.follow_up_days, e.referral_target, e.updated_at
      FROM encounters e
      JOIN doctors d ON d.id = e.doctor_id
@@ -76,9 +81,11 @@ export async function GET(
 }
 
 type PatchBody = {
+  chief_complaint_chips?: string[] | null;
   chief_complaint_text?: string | null;
   exam_findings?: string | null;
   vitals?: Record<string, unknown> | null;
+  assessment_codes?: string[] | null;
   assessment_text?: string | null;
   disposition?: string | null;
   follow_up_days?: number | null;
@@ -131,9 +138,11 @@ export async function PATCH(
     vals.push(raw);
     sets.push(`${col} = $${vals.length}${cast}`);
   };
+  if ('chief_complaint_chips' in body) push('chief_complaint_chips', body.chief_complaint_chips, '::text[]');
   if ('chief_complaint_text' in body) push('chief_complaint_text', body.chief_complaint_text);
   if ('exam_findings' in body) push('exam_findings', body.exam_findings);
   if ('vitals' in body) push('vitals', body.vitals === null ? null : JSON.stringify(body.vitals), '::jsonb');
+  if ('assessment_codes' in body) push('assessment_codes', body.assessment_codes, '::text[]');
   if ('assessment_text' in body) push('assessment_text', body.assessment_text);
   if ('disposition' in body) push('disposition', body.disposition, '::disposition_kind');
   if ('follow_up_days' in body) push('follow_up_days', body.follow_up_days);

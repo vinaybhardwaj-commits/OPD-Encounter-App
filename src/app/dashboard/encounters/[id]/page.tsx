@@ -22,6 +22,8 @@ type Row = EncounterEditable & {
   patient_phone_e164: string | null;
   patient_allergies: string | null;
   encounter_number: string;
+  chief_complaint_chips: string[] | null;
+  assessment_codes: string[] | null;
 };
 
 export default async function EncounterPage({
@@ -42,9 +44,11 @@ export default async function EncounterPage({
        e.status::text AS status,
        e.started_at,
        e.pending_diagnostic_test,
+       e.chief_complaint_chips,
        e.chief_complaint_text,
        e.exam_findings,
        e.vitals,
+       e.assessment_codes,
        e.assessment_text,
        e.disposition::text AS disposition,
        e.follow_up_days,
@@ -114,9 +118,11 @@ export default async function EncounterPage({
             status: row.status as EncounterEditable['status'],
             started_at: row.started_at,
             pending_diagnostic_test: row.pending_diagnostic_test,
+            chief_complaint_chips: row.chief_complaint_chips,
             chief_complaint_text: row.chief_complaint_text,
             exam_findings: row.exam_findings,
             vitals: row.vitals,
+            assessment_codes: row.assessment_codes,
             assessment_text: row.assessment_text,
             disposition: row.disposition as EncounterEditable['disposition'],
             follow_up_days: row.follow_up_days,
