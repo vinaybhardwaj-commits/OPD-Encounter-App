@@ -504,6 +504,36 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN IF NOT EXISTS ddi_findings JSONB;
     `,
   },
+  {
+    version: 16,
+    name: 'invite_tokens',
+    sql: `
+      -- v2.0.1: admin-generated invite tokens for the magic-link signup flow.
+      -- An admin pre-stages a user's email + role at /admin/users; the system
+      -- emails them a link to /auth/signup?invite=<token>. Accepting the link
+      -- INSERTs a row into doctors with the staged role + logs accepted_at.
+      --
+      -- token is a 32-byte hex string. UNIQUE so URLs can't be guessed.
+      -- expires_at defaults to NOW() + 7 days; accept_token() refuses
+      -- expired or already-accepted invites.
+      CREATE TABLE IF NOT EXISTS invite_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        token TEXT UNIQUE NOT NULL,
+        email TEXT NOT NULL,
+        name TEXT,
+        role TEXT NOT NULL
+          CHECK (role IN ('doctor','nurse','cce','lab_tech','admin')),
+        created_by UUID REFERENCES doctors(id),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL,
+        accepted_at TIMESTAMPTZ,
+        accepted_user_id UUID REFERENCES doctors(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_invite_tokens_email ON invite_tokens(lower(email));
+      CREATE INDEX IF NOT EXISTS idx_invite_tokens_pending
+        ON invite_tokens(expires_at) WHERE accepted_at IS NULL;
+    `,
+  },
 ];
 
 /**
