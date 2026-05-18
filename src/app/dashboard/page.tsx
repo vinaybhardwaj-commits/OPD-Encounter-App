@@ -17,6 +17,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentDoctor } from '@/lib/auth';
 import { getQueueForDoctor, type QueueCard } from '@/lib/queue';
 import { startEncounter } from './actions';
+import { PatientSearch } from '@/components/PatientSearch';
 
 export const dynamic = 'force-dynamic';
 
@@ -69,6 +70,9 @@ export default async function DashboardPage() {
             <span className="text-xs font-medium uppercase tracking-[0.18em] text-even-navy">
               Even OPD · EHRC
             </span>
+          </div>
+          <div className="mx-6 flex-1">
+            <PatientSearch />
           </div>
           <div className="flex items-center gap-6">
             <Link
