@@ -27,6 +27,7 @@ import { PrescriptionCompose } from './PrescriptionCompose';
 import type { PrescriptionLine } from './DrugRow';
 import { AmbientRecorder } from './AmbientRecorder';
 import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewer';
+import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -78,10 +79,19 @@ const DISPOSITIONS: { value: Disposition; label: string; hint: string }[] = [
   { value: 'vaccinate', label: 'Vaccinate', hint: 'Routine immunisation.' },
 ];
 
-export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
+export function EncounterEditor({
+  initial,
+  patientName,
+}: {
+  initial: EncounterEditable;
+  patientName: string;
+}) {
   const router = useRouter();
   const readOnly = initial.status === 'completed';
   const submitGated = initial.status === 'paused_diagnostics';
+  const canSendToDiagnostics =
+    initial.status === 'active' || initial.status === 'ready_to_resume';
+  const [diagModalOpen, setDiagModalOpen] = useState(false);
 
   const [ccChips, setCcChips] = useState<string[]>(initial.chief_complaint_chips ?? []);
   const [cc, setCc] = useState(initial.chief_complaint_text ?? '');
@@ -457,29 +467,52 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
 
       {!readOnly && (
         <div className="sticky bottom-0 -mx-6 border-t border-even-ink-100 bg-white/95 px-6 py-4 backdrop-blur">
-          <div className="flex items-center justify-between gap-4">
-            <div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
               {submitError && (
                 <p className="text-xs text-even-pink-700">{submitError}</p>
               )}
-              {!disposition && (
+              {!disposition && !submitGated && (
                 <p className="text-xs text-even-ink-500">
                   Pick a disposition to submit.
                 </p>
               )}
+              {submitGated && (
+                <p className="text-xs text-even-ink-500">
+                  Paused for diagnostics — submit unlocks once the encounter is back as Ready to resume.
+                </p>
+              )}
             </div>
-            <button
-              type="button"
-              onClick={onSubmit}
-              disabled={!disposition || submitting || submitGated}
-              className="rounded-lg bg-even-blue px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-even-blue-700 focus:outline-none focus:ring-2 focus:ring-even-blue-100"
-              title={submitGated ? 'Paused for diagnostics — resume first (Sprint 6).' : ''}
-            >
-              {submitting ? 'Finishing…' : 'Submit & finish'}
-            </button>
+            <div className="flex items-center gap-2">
+              {canSendToDiagnostics && (
+                <button
+                  type="button"
+                  onClick={() => setDiagModalOpen(true)}
+                  className="rounded-lg border border-even-pink-300 bg-white px-4 py-2.5 text-sm font-semibold text-even-pink-800 transition hover:bg-even-pink-50"
+                >
+                  Send to diagnostics
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onSubmit}
+                disabled={!disposition || submitting || submitGated}
+                className="rounded-lg bg-even-blue px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-even-blue-700 focus:outline-none focus:ring-2 focus:ring-even-blue-100"
+                title={submitGated ? 'Encounter is paused — resume first.' : ''}
+              >
+                {submitting ? 'Finishing…' : 'Submit & finish'}
+              </button>
+            </div>
           </div>
         </div>
       )}
+
+      <SendToDiagnosticsModal
+        encounterId={initial.id}
+        patientName={patientName}
+        open={diagModalOpen}
+        onClose={() => setDiagModalOpen(false)}
+      />
     </div>
   );
 }
