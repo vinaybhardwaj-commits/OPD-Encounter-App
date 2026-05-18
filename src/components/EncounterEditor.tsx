@@ -239,19 +239,18 @@ export function EncounterEditor({
       </div>
 
       {initial.status === 'ready_to_resume' && (
-        <div className="rounded-lg border border-even-blue-200 bg-even-blue-50 p-3 text-xs text-even-navy">
-          Diagnostic{' '}
-          <span className="font-medium">{initial.pending_diagnostic_test}</span>{' '}
-          back. Encounter ready to continue. Pause / resume controls ship in
-          Sprint 6.
-        </div>
+        <ResumeBanner
+          encounterId={initial.id}
+          test={initial.pending_diagnostic_test}
+        />
       )}
 
       {initial.status === 'paused_diagnostics' && (
         <div className="rounded-lg border border-even-pink-200 bg-even-pink-50 p-3 text-xs text-even-navy">
           Encounter paused — awaiting{' '}
           <span className="font-medium">{initial.pending_diagnostic_test}</span>.
-          You can still update notes; Submit is held until the encounter is resumed.
+          You can still update notes; Submit is held until the encounter is
+          back as Ready to resume.
         </div>
       )}
 
@@ -561,6 +560,68 @@ function Section({
         {desc && <p className="text-[11px] text-even-ink-400">{desc}</p>}
       </div>
       {children}
+    </div>
+  );
+}
+
+function ResumeBanner({
+  encounterId,
+  test,
+}: {
+  encounterId: string;
+  test: string | null;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onResume() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/encounters/${encounterId}/resume`, {
+        method: 'POST',
+      });
+      const j = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !j.ok) {
+        setError(j.error ?? 'Could not resume.');
+        return;
+      }
+      router.refresh();
+    } catch {
+      setError('Network error. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-even-blue-200 bg-even-blue-50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold uppercase tracking-wider text-even-blue-700">
+            Ready to resume
+          </p>
+          <p className="mt-0.5 text-xs text-even-navy">
+            Diagnostic{' '}
+            <span className="font-medium">{test ?? 'result'}</span> available in
+            Pulse. Read the result, then continue with assessment, prescription,
+            and disposition.
+          </p>
+          {error && (
+            <p className="mt-2 text-[11px] text-even-pink-700">{error}</p>
+          )}
+        </div>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onResume}
+          className="rounded-md bg-even-blue px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-even-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? 'Resuming…' : 'Resume encounter'}
+        </button>
+      </div>
     </div>
   );
 }
