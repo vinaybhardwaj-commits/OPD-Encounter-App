@@ -374,6 +374,136 @@ export const MIGRATIONS: Migration[] = [
         ON doctor_overrides(patient_id, target_kind);
     `,
   },
+  {
+    version: 9,
+    name: 'users_role_column',
+    sql: `
+      -- v2.0.0: the doctors table now holds all staff roles. Name kept
+      -- as 'doctors' for pragmatic reasons (avoids touching every
+      -- existing query); semantically it's the users table.
+      ALTER TABLE doctors
+        ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'doctor'
+        CHECK (role IN ('doctor','nurse','cce','lab_tech','admin'));
+      CREATE INDEX IF NOT EXISTS idx_doctors_role ON doctors(role);
+    `,
+  },
+  {
+    version: 10,
+    name: 'encounter_status_extended',
+    sql: `
+      -- v2.0.0: add three pre-doctor states for the CCE / Triage flow.
+      -- Order matters semantically: registered → at_triage → waiting_for_doctor → active.
+      ALTER TYPE encounter_status ADD VALUE IF NOT EXISTS 'registered';
+      ALTER TYPE encounter_status ADD VALUE IF NOT EXISTS 'at_triage';
+      ALTER TYPE encounter_status ADD VALUE IF NOT EXISTS 'waiting_for_doctor';
+    `,
+  },
+  {
+    version: 11,
+    name: 'opd_rooms',
+    sql: `
+      -- v2.0.0: physical OPD rooms with a default doctor. CCE assigns
+      -- patients to rooms; the room's default doctor owns the queue.
+      -- Admin can swap default_doctor_id when shifts change.
+      CREATE TABLE IF NOT EXISTS opd_rooms (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT UNIQUE NOT NULL,
+        floor TEXT,
+        default_doctor_id UUID REFERENCES doctors(id),
+        specialty TEXT,                  -- 'Neurology', 'Internal Medicine', ...
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_opd_rooms_active ON opd_rooms(active);
+    `,
+  },
+  {
+    version: 12,
+    name: 'encounters_v2_columns',
+    sql: `
+      -- v2.0.0: encounter gains room assignment, CCE-captured visit
+      -- reason, a day-of token (defaults to MRN per Round 2 decision),
+      -- and triage attribution. doctor_id stays as the encounter's
+      -- primary doctor (resolved from room.default_doctor at registration).
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS room_id UUID REFERENCES opd_rooms(id),
+        ADD COLUMN IF NOT EXISTS intake_visit_reason TEXT,
+        ADD COLUMN IF NOT EXISTS token_number TEXT,
+        ADD COLUMN IF NOT EXISTS triage_nurse_id UUID REFERENCES doctors(id),
+        ADD COLUMN IF NOT EXISTS triage_completed_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS registered_by_cce_id UUID REFERENCES doctors(id),
+        ADD COLUMN IF NOT EXISTS registered_at TIMESTAMPTZ;
+      CREATE INDEX IF NOT EXISTS idx_encounters_room_status
+        ON encounters(room_id, status) WHERE status != 'completed';
+    `,
+  },
+  {
+    version: 13,
+    name: 'lab_orders_and_results',
+    sql: `
+      -- v2.1: free-text orders, Qwen-normalized canonical_key. No lab
+      -- catalog table per Round 4 decision. Trending works on
+      -- lab_results.canonical_key + patient_id.
+      CREATE TABLE IF NOT EXISTS lab_orders (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        encounter_id UUID NOT NULL REFERENCES encounters(id) ON DELETE CASCADE,
+        patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+        ordering_doctor_id UUID NOT NULL REFERENCES doctors(id),
+        raw_text TEXT NOT NULL,
+        canonical_key TEXT,
+        display_name TEXT,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending','in_progress','resulted','cancelled')),
+        ordered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        resulted_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_lab_orders_patient ON lab_orders(patient_id, ordered_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_lab_orders_status ON lab_orders(status) WHERE status != 'resulted';
+
+      CREATE TABLE IF NOT EXISTS lab_results (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        lab_order_id UUID REFERENCES lab_orders(id) ON DELETE SET NULL,
+        patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+        canonical_key TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        value_numeric NUMERIC,
+        value_text TEXT,
+        unit TEXT,
+        reference_range TEXT,
+        is_critical BOOLEAN NOT NULL DEFAULT FALSE,
+        source_pdf_url TEXT,
+        entered_by UUID REFERENCES doctors(id),
+        entered_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_lab_results_patient_key
+        ON lab_results(patient_id, canonical_key, entered_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_lab_results_critical
+        ON lab_results(patient_id, is_critical) WHERE is_critical = TRUE;
+    `,
+  },
+  {
+    version: 14,
+    name: 'encounter_handoff_columns',
+    sql: `
+      -- v2.3: cross-doctor handoff notes. Set on encounter completion;
+      -- shown as a pinned banner on the patient's next encounter open
+      -- across any doctor; auto-dismisses when next doctor ack'd.
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS handoff_note TEXT,
+        ADD COLUMN IF NOT EXISTS handoff_ack_by UUID REFERENCES doctors(id),
+        ADD COLUMN IF NOT EXISTS handoff_ack_at TIMESTAMPTZ;
+    `,
+  },
+  {
+    version: 15,
+    name: 'encounter_ddi_findings',
+    sql: `
+      -- v2.2: DDI scan results persist on the encounter for audit + UI rehydration.
+      -- Shape: [{ severity, pair: [a,b], rationale, scanned_at }, ...]
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ddi_findings JSONB;
+    `,
+  },
 ];
 
 /**
