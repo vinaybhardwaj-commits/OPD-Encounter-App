@@ -20,6 +20,16 @@ import { DrugRow, lineFromDrug, type PrescriptionLine } from './DrugRow';
 import { findSmartDefaults } from '@/lib/drug-defaults';
 import type { DrugSearchResult } from '@/lib/types';
 
+/**
+ * LASA alternates flow through the typeahead pick — we cache them in a
+ * client-side Map<item_code, string[]> so the confirmation strip can
+ * render below a freshly-added row without round-tripping them through
+ * the persisted lines[] JSONB.
+ *
+ * lasaAck tracks which item_codes the doctor has confirmed (or
+ * intentionally dismissed). Lasts for the lifetime of the page mount.
+ */
+
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
 
 export type PrescriptionComposeProps = {
@@ -36,6 +46,11 @@ export function PrescriptionCompose({
   const [lines, setLines] = useState<PrescriptionLine[]>(initialLines);
   const [adderOpen, setAdderOpen] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
+
+  // LASA + Schedule X state (client-side only — not persisted)
+  const [lasaAlternates, setLasaAlternates] = useState<Record<string, string[]>>({});
+  const [lasaAck, setLasaAck] = useState<Set<string>>(new Set());
+  const [pendingSchedX, setPendingSchedX] = useState<DrugSearchResult | null>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipFirstRef = useRef(true);
@@ -68,13 +83,40 @@ export function PrescriptionCompose({
     };
   }, [lines, encounterId, readOnly]);
 
-  const addPick = useCallback((drug: DrugSearchResult) => {
+  const addPickConfirmed = useCallback((drug: DrugSearchResult) => {
     setLines((cur) => {
-      // Don't double-add the same item_code
       if (cur.some((l) => l.item_code === drug.item_code)) return cur;
       const defaults = findSmartDefaults(drug.generic_name);
       return [...cur, lineFromDrug(drug, defaults)];
     });
+    if (drug.lasa_alternates && drug.lasa_alternates.length > 0) {
+      setLasaAlternates((cur) => ({ ...cur, [drug.item_code]: drug.lasa_alternates }));
+    }
+  }, []);
+
+  const onTypeaheadPick = useCallback(
+    (drug: DrugSearchResult) => {
+      // Schedule X (narcotic / psychotropic) requires explicit confirm
+      if (drug.schedule_dc === 'X') {
+        setPendingSchedX(drug);
+        return;
+      }
+      addPickConfirmed(drug);
+    },
+    [addPickConfirmed],
+  );
+
+  const confirmSchedX = useCallback(() => {
+    if (pendingSchedX) addPickConfirmed(pendingSchedX);
+    setPendingSchedX(null);
+  }, [pendingSchedX, addPickConfirmed]);
+
+  const cancelSchedX = useCallback(() => {
+    setPendingSchedX(null);
+  }, []);
+
+  const acknowledgeLasa = useCallback((item_code: string) => {
+    setLasaAck((cur) => new Set(cur).add(item_code));
   }, []);
 
   const updateAt = useCallback((idx: number, next: PrescriptionLine) => {
@@ -115,14 +157,7 @@ export function PrescriptionCompose({
         <div className="mb-4">
           {adderOpen ? (
             <div>
-              <DrugTypeahead
-                autoFocus
-                clearOnSelect
-                onSelect={(d) => {
-                  addPick(d);
-                  // Keep the picker open for the next drug
-                }}
-              />
+              <DrugTypeahead autoFocus clearOnSelect onSelect={onTypeaheadPick} />
               <button
                 type="button"
                 onClick={() => setAdderOpen(false)}
@@ -144,6 +179,46 @@ export function PrescriptionCompose({
         </div>
       )}
 
+      {/* Schedule X double-confirm */}
+      {pendingSchedX && (
+        <div
+          role="alertdialog"
+          aria-label="Confirm Schedule X drug"
+          className="mb-4 rounded-xl border border-even-pink-300 bg-even-pink-50 p-4 shadow-sm"
+        >
+          <div className="flex items-center gap-2 text-even-pink-900">
+            <span className="rounded-full bg-even-pink-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider">
+              Schedule X
+            </span>
+            <span className="text-sm font-semibold">
+              {pendingSchedX.brand_name}
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-even-pink-900">
+            This is a Schedule X drug (narcotic / psychotropic). Adding it
+            to the prescription requires explicit confirmation per the
+            Drugs &amp; Cosmetics Rules. The pharmacy will need a license
+            number recorded against this dispense.
+          </p>
+          <div className="mt-3 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={cancelSchedX}
+              className="rounded-md border border-even-ink-200 bg-white px-3 py-1.5 text-xs font-semibold text-even-navy hover:border-even-ink-300"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirmSchedX}
+              className="rounded-md bg-even-pink-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-even-pink-800"
+            >
+              Confirm &amp; add
+            </button>
+          </div>
+        </div>
+      )}
+
       {lines.length === 0 ? (
         <div className="rounded-xl border border-dashed border-even-ink-200 bg-white p-6 text-center text-xs text-even-ink-400">
           Drugs will appear here as you add them. Each row picks up smart
@@ -151,15 +226,54 @@ export function PrescriptionCompose({
         </div>
       ) : (
         <div className="space-y-3">
-          {lines.map((line, idx) => (
-            <DrugRow
-              key={`${line.item_code}-${idx}`}
-              line={line}
-              onChange={(next) => updateAt(idx, next)}
-              onRemove={() => removeAt(idx)}
-              readOnly={readOnly}
-            />
-          ))}
+          {lines.map((line, idx) => {
+            const alts = lasaAlternates[line.item_code];
+            const showLasa =
+              !readOnly && alts && alts.length > 0 && !lasaAck.has(line.item_code);
+            return (
+              <div key={`${line.item_code}-${idx}`} className="space-y-2">
+                <DrugRow
+                  line={line}
+                  onChange={(next) => updateAt(idx, next)}
+                  onRemove={() => removeAt(idx)}
+                  readOnly={readOnly}
+                />
+                {showLasa && (
+                  <div className="rounded-lg border border-even-pink-200 bg-even-pink-50/60 p-3">
+                    <p className="text-xs text-even-navy">
+                      You picked{' '}
+                      <span className="font-semibold">{line.brand_name}</span>.
+                      Sound-alike alternates:{' '}
+                      <span className="font-medium text-even-pink-900">
+                        {alts.join(', ')}
+                      </span>
+                      .
+                    </p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => acknowledgeLasa(line.item_code)}
+                        className="rounded-md border border-even-blue-300 bg-white px-3 py-1 text-[11px] font-semibold text-even-blue-700 hover:bg-even-blue-50"
+                      >
+                        ✓ Confirm pick
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          removeAt(idx);
+                          acknowledgeLasa(line.item_code);
+                          setAdderOpen(true);
+                        }}
+                        className="rounded-md text-[11px] font-medium text-even-pink-700 hover:underline"
+                      >
+                        Remove &amp; pick a different drug
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
