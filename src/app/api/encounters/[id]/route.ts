@@ -90,6 +90,7 @@ type PatchBody = {
   disposition?: string | null;
   follow_up_days?: number | null;
   referral_target?: string | null;
+  disposition_label_override?: string | null;
 };
 
 const ALLOWED_DISPOSITIONS = new Set([
@@ -147,6 +148,8 @@ export async function PATCH(
   if ('disposition' in body) push('disposition', body.disposition, '::disposition_kind');
   if ('follow_up_days' in body) push('follow_up_days', body.follow_up_days);
   if ('referral_target' in body) push('referral_target', body.referral_target);
+  if ('disposition_label_override' in body)
+    push('disposition_label_override', body.disposition_label_override);
 
   if (sets.length === 0) {
     return NextResponse.json({ ok: true, encounter: existing, noop: true });

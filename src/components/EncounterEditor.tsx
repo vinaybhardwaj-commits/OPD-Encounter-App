@@ -66,6 +66,7 @@ export type EncounterEditable = {
   disposition: Disposition | null;
   follow_up_days: number | null;
   referral_target: string | null;
+  disposition_label_override: string | null;
   prescription_lines: PrescriptionLine[];
 };
 
@@ -133,6 +134,9 @@ export function EncounterEditor({
   const [disposition, setDisposition] = useState<Disposition | null>(initial.disposition);
   const [followUpDays, setFollowUpDays] = useState<number | ''>(initial.follow_up_days ?? '');
   const [referralTarget, setReferralTarget] = useState<string>(initial.referral_target ?? '');
+  const [dispositionLabel, setDispositionLabel] = useState<string | null>(
+    initial.disposition_label_override ?? null,
+  );
 
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
@@ -173,8 +177,9 @@ export function EncounterEditor({
       disposition: disposition,
       follow_up_days: disposition === 'follow_up' && followUpDays !== '' ? Number(followUpDays) : null,
       referral_target: disposition === 'refer' ? referralTarget || null : null,
+      disposition_label_override: dispositionLabel,
     };
-  }, [ccChips, cc, exam, assessmentCodes, assessment, vitals, disposition, followUpDays, referralTarget]);
+  }, [ccChips, cc, exam, assessmentCodes, assessment, vitals, disposition, followUpDays, referralTarget, dispositionLabel]);
 
   // Debounced auto-save
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -205,7 +210,7 @@ export function EncounterEditor({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [ccChips, cc, exam, assessmentCodes, assessment, vitals, disposition, followUpDays, referralTarget, initial.id, readOnly, buildBody]);
+  }, [ccChips, cc, exam, assessmentCodes, assessment, vitals, disposition, followUpDays, referralTarget, dispositionLabel, initial.id, readOnly, buildBody]);
 
   async function onSubmit() {
     if (readOnly || submitting || submitGated || !disposition) return;
@@ -427,30 +432,102 @@ export function EncounterEditor({
       </Section>
 
       <Section label="Disposition" desc="Required to submit." required>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {DISPOSITIONS.map((d) => {
-            const selected = disposition === d.value;
-            return (
-              <button
-                key={d.value}
-                type="button"
-                disabled={readOnly}
-                onClick={() => setDisposition(d.value)}
-                aria-pressed={selected}
-                className={`rounded-xl border p-3 text-left transition disabled:cursor-not-allowed ${
-                  selected
-                    ? 'border-even-blue bg-even-blue text-white shadow-sm'
-                    : 'border-even-ink-200 bg-white text-even-navy hover:border-even-blue-300'
-                }`}
-              >
-                <div className="text-sm font-semibold">{d.label}</div>
-                <div className={`text-[11px] ${selected ? 'text-white/80' : 'text-even-ink-500'}`}>
-                  {d.hint}
-                </div>
-              </button>
-            );
-          })}
-        </div>
+        {(() => {
+          // PH.4: re-order the 6 standard buttons so the AI-recommended
+          // one is leftmost, and stamp it with a violet dot.
+          const aiRec = aiSafe.disposition_recommendation;
+          const ordered = aiRec
+            ? [
+                ...DISPOSITIONS.filter((d) => d.value === aiRec),
+                ...DISPOSITIONS.filter((d) => d.value !== aiRec),
+              ]
+            : DISPOSITIONS;
+          return (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {ordered.map((d) => {
+                const selected = disposition === d.value && !dispositionLabel;
+                const isAi = aiRec === d.value;
+                return (
+                  <button
+                    key={d.value}
+                    type="button"
+                    disabled={readOnly}
+                    onClick={() => {
+                      setDisposition(d.value);
+                      setDispositionLabel(null);
+                    }}
+                    aria-pressed={selected}
+                    className={`relative rounded-xl border p-3 text-left transition disabled:cursor-not-allowed ${
+                      selected
+                        ? 'border-even-blue bg-even-blue text-white shadow-sm'
+                        : 'border-even-ink-200 bg-white text-even-navy hover:border-even-blue-300'
+                    }`}
+                  >
+                    {isAi && (
+                      <span
+                        aria-label="AI-recommended"
+                        className={`absolute right-2 top-2 inline-block h-1.5 w-1.5 rounded-full ${
+                          selected ? 'bg-white' : 'bg-violet-500'
+                        }`}
+                      />
+                    )}
+                    <div className="text-sm font-semibold">{d.label}</div>
+                    <div className={`text-[11px] ${selected ? 'text-white/80' : 'text-even-ink-500'}`}>
+                      {d.hint}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })()}
+
+        {aiSafe.disposition_additions.length > 0 && (
+          <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50/60 p-2">
+            <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-800">
+              <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
+              For this patient
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {aiSafe.disposition_additions.map((label) => {
+                const selected = dispositionLabel === label;
+                return (
+                  <button
+                    key={`disp-add-${label}`}
+                    type="button"
+                    disabled={readOnly}
+                    onClick={() => {
+                      // Patient-specific dispositions map to 'refer' under
+                      // the hood (most are specialist hand-offs), with
+                      // the override label persisted for the PDF.
+                      setDisposition('refer');
+                      setDispositionLabel(label);
+                      // If the addition looks like "Refer to Dr. X · Spec",
+                      // pre-fill the referral target with the part after
+                      // "Refer to " so the doctor doesn't have to retype.
+                      const m = /^Refer to\s+(.+)$/i.exec(label);
+                      if (m) setReferralTarget(m[1]);
+                    }}
+                    aria-pressed={selected}
+                    className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-left transition disabled:cursor-not-allowed ${
+                      selected
+                        ? 'border-violet-500 bg-violet-600 text-white shadow-sm'
+                        : 'border-violet-300 bg-white text-violet-900 hover:border-violet-500'
+                    }`}
+                  >
+                    <span
+                      aria-hidden
+                      className={`inline-block h-1.5 w-1.5 rounded-full ${
+                        selected ? 'bg-white' : 'bg-violet-500'
+                      }`}
+                    />
+                    <span className="text-xs font-semibold">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {disposition === 'follow_up' && (
           <div className="mt-4 flex items-center gap-2">

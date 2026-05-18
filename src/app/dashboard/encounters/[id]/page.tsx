@@ -33,6 +33,7 @@ type Row = EncounterEditable & {
   encounter_number: string;
   chief_complaint_chips: string[] | null;
   assessment_codes: string[] | null;
+  disposition_label_override: string | null;
 };
 
 export default async function EncounterPage({
@@ -63,6 +64,7 @@ export default async function EncounterPage({
        e.disposition::text AS disposition,
        e.follow_up_days,
        e.referral_target,
+       e.disposition_label_override,
        p.name AS patient_name,
        p.mrn AS patient_mrn,
        p.age_years AS patient_age_years,
@@ -213,6 +215,7 @@ export default async function EncounterPage({
             disposition: row.disposition as EncounterEditable['disposition'],
             follow_up_days: row.follow_up_days,
             referral_target: row.referral_target,
+            disposition_label_override: row.disposition_label_override ?? null,
             prescription_lines: prescriptionLines,
           }}
         />
