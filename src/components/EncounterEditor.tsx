@@ -20,6 +20,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { CC_CHIPS } from '@/lib/cc-chips';
+import { lookupIcd10 } from '@/lib/icd10';
+import { Icd10Typeahead } from './Icd10Typeahead';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -278,29 +280,49 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
       <Section label="Assessment" desc="Impression + ICD-10 codes.">
         {assessmentCodes.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-2">
-            {assessmentCodes.map((code) => (
-              <span
-                key={code}
-                className="inline-flex items-center gap-1 rounded-full bg-even-blue-50 px-2.5 py-1 text-[11px] font-medium text-even-blue-800 ring-1 ring-even-blue-200"
-              >
-                <span className="font-mono">{code}</span>
-                {!readOnly && (
-                  <button
-                    type="button"
-                    onClick={() => setAssessmentCodes((cur) => cur.filter((c) => c !== code))}
-                    aria-label={`Remove ${code}`}
-                    className="rounded-full text-even-blue-500 hover:text-even-pink-700"
-                  >
-                    ×
-                  </button>
-                )}
-              </span>
-            ))}
+            {assessmentCodes.map((code) => {
+              const label = lookupIcd10(code);
+              return (
+                <span
+                  key={code}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-even-blue-50 px-2.5 py-1 text-[11px] font-medium text-even-blue-800 ring-1 ring-even-blue-200"
+                  title={label}
+                >
+                  <span className="font-mono font-semibold">{code}</span>
+                  {label && (
+                    <span className="hidden text-even-blue-700 sm:inline">
+                      {label}
+                    </span>
+                  )}
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAssessmentCodes((cur) => cur.filter((c) => c !== code))
+                      }
+                      aria-label={`Remove ${code}`}
+                      className="rounded-full text-even-blue-500 hover:text-even-pink-700"
+                    >
+                      ×
+                    </button>
+                  )}
+                </span>
+              );
+            })}
           </div>
         )}
-        <p className="mb-2 text-[11px] text-even-ink-400">
-          ICD-10 typeahead ships in M3.2 — for now, codes appear here when picked.
-        </p>
+        {!readOnly && (
+          <div className="mb-3">
+            <Icd10Typeahead
+              excludeCodes={assessmentCodes}
+              onSelect={(item) =>
+                setAssessmentCodes((cur) =>
+                  cur.includes(item.code) ? cur : [...cur, item.code],
+                )
+              }
+            />
+          </div>
+        )}
         <textarea
           value={assessment}
           onChange={(e) => setAssessment(e.target.value)}
