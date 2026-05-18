@@ -17,7 +17,7 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { pool } from '@/lib/db';
-import { getCurrentDoctor } from '@/lib/auth';
+import { getCurrentUser } from '@/lib/auth';
 import { actionRecompute, actionSaveOverride } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -132,7 +132,7 @@ export default async function PatientPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const session = await getCurrentDoctor();
+  const session = await getCurrentUser();
   if (!session) redirect('/auth/login');
 
   const { id } = await params;
