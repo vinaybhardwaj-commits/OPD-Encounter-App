@@ -22,6 +22,7 @@ import { useRouter } from 'next/navigation';
 import { CC_CHIPS } from '@/lib/cc-chips';
 import { lookupIcd10 } from '@/lib/icd10';
 import { Icd10Typeahead } from './Icd10Typeahead';
+import { DictateButton } from './DictateButton';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -235,7 +236,11 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
         </div>
       )}
 
-      <Section label="Chief complaint" desc="Tap chips for the common shortcuts. Add detail in the textarea.">
+      <Section
+        label="Chief complaint"
+        desc="Tap chips for the common shortcuts. Add detail in the textarea."
+        dictate={!readOnly ? { encounterId: initial.id, section: 'chief_complaint' } : undefined}
+      >
         <CcChipGrid
           selected={ccChips}
           onToggle={(label) =>
@@ -266,7 +271,11 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
         </div>
       </Section>
 
-      <Section label="Exam findings" desc="What you observed.">
+      <Section
+        label="Exam findings"
+        desc="What you observed."
+        dictate={!readOnly ? { encounterId: initial.id, section: 'exam_findings' } : undefined}
+      >
         <textarea
           value={exam}
           onChange={(e) => setExam(e.target.value)}
@@ -277,7 +286,11 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
         />
       </Section>
 
-      <Section label="Assessment" desc="Impression + ICD-10 codes.">
+      <Section
+        label="Assessment"
+        desc="Impression + ICD-10 codes."
+        dictate={!readOnly ? { encounterId: initial.id, section: 'assessment' } : undefined}
+      >
         {assessmentCodes.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-2">
             {assessmentCodes.map((code) => {
@@ -439,20 +452,38 @@ function Section({
   label,
   desc,
   required,
+  dictate,
   children,
 }: {
   label: string;
   desc?: string;
   required?: boolean;
+  dictate?: {
+    encounterId: string;
+    section:
+      | 'chief_complaint'
+      | 'exam_findings'
+      | 'assessment'
+      | 'prescription'
+      | 'disposition';
+  };
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <div className="mb-2 flex items-baseline justify-between gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-even-navy">
-          {label}{' '}
-          {required && <span className="ml-1 text-even-pink-700">*</span>}
-        </h2>
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-3">
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-even-navy">
+            {label}{' '}
+            {required && <span className="ml-1 text-even-pink-700">*</span>}
+          </h2>
+          {dictate && (
+            <DictateButton
+              encounterId={dictate.encounterId}
+              section={dictate.section}
+            />
+          )}
+        </div>
         {desc && <p className="text-[11px] text-even-ink-400">{desc}</p>}
       </div>
       {children}

@@ -277,6 +277,18 @@ export const MIGRATIONS: Migration[] = [
       ON CONFLICT (encounter_number) DO NOTHING;
     `,
   },
+  {
+    version: 4,
+    name: 'relax_section_dictation_blob_url',
+    sql: `
+      -- Sprint 3 lays the section-dictation scaffold (UI + API + DB row).
+      -- Real audio capture + Blob upload ship in Sprint 5. Until then a
+      -- dictation row can exist with NULL audio_blob_url meaning
+      -- "doctor intended to dictate here, no audio yet."
+      ALTER TABLE section_dictations
+        ALTER COLUMN audio_blob_url DROP NOT NULL;
+    `,
+  },
 ];
 
 /**
