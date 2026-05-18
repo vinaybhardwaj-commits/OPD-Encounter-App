@@ -1,53 +1,57 @@
 'use client';
 
 /**
- * /dashboard/drugs — typeahead playground.
+ * /dashboard/drugs — typeahead + DrugRow playground.
  *
- * Lets V sanity-test the M1.3 typeahead end-to-end before Sprint 4
- * integrates it into the encounter screen's prescription compose row.
- * Behavior here intentionally mirrors what a "drug picker inside a Rx
- * row" will feel like: type, pick, see the row materialise, repeat.
- *
- * The page is a client component to own selection state; the layout
- * around it stays as the M0.4 dashboard shell.
+ * Sprint 1 used this page to demo `<DrugTypeahead>` against an in-memory
+ * picks list. Sprint 4's M4.1 upgrades it to the full Rx compose feel:
+ * each pick instantiates a `<DrugRow>` with smart defaults pre-applied.
+ * M4.2 will move the same surface inside the encounter screen with
+ * persistence; this page stays as a fast playground for tweaking the
+ * row component without touching real encounter data.
  */
 import { useState } from 'react';
 import Link from 'next/link';
 import { DrugTypeahead } from '@/components/DrugTypeahead';
+import { DrugRow, lineFromDrug, type PrescriptionLine } from '@/components/DrugRow';
+import { findSmartDefaults } from '@/lib/drug-defaults';
 import type { DrugSearchResult } from '@/lib/types';
 
-type Pick = DrugSearchResult & { picked_at: number };
-
 export default function DrugsPage() {
-  const [picks, setPicks] = useState<Pick[]>([]);
+  const [lines, setLines] = useState<PrescriptionLine[]>([]);
 
   function add(drug: DrugSearchResult) {
-    setPicks((p) => [{ ...drug, picked_at: Date.now() }, ...p]);
+    const defaults = findSmartDefaults(drug.generic_name);
+    setLines((cur) => [lineFromDrug(drug, defaults), ...cur]);
   }
 
-  function removeAt(i: number) {
-    setPicks((p) => p.filter((_, idx) => idx !== i));
+  function update(idx: number, next: PrescriptionLine) {
+    setLines((cur) => cur.map((l, i) => (i === idx ? next : l)));
+  }
+
+  function removeAt(idx: number) {
+    setLines((cur) => cur.filter((_, i) => i !== idx));
   }
 
   function clearAll() {
-    setPicks([]);
+    setLines([]);
   }
+
+  const withDefaults = lines.filter((l) => l.frequency).length;
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
       <header className="border-b border-even-ink-100 bg-white">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            <Link href="/dashboard" className="flex items-center gap-3">
-              <div
-                aria-hidden
-                className="h-7 w-7 rounded-full bg-even-blue ring-4 ring-even-blue-100"
-              />
-              <span className="text-xs font-medium uppercase tracking-[0.18em] text-even-navy">
-                Even OPD
-              </span>
-            </Link>
-          </div>
+          <Link href="/dashboard" className="flex items-center gap-3">
+            <div
+              aria-hidden
+              className="h-7 w-7 rounded-full bg-even-blue ring-4 ring-even-blue-100"
+            />
+            <span className="text-xs font-medium uppercase tracking-[0.18em] text-even-navy">
+              Even OPD
+            </span>
+          </Link>
           <Link
             href="/dashboard"
             className="text-xs font-medium uppercase tracking-wider text-even-ink-500 hover:text-even-navy"
@@ -59,23 +63,29 @@ export default function DrugsPage() {
 
       <section className="mx-auto max-w-3xl px-6 py-10">
         <p className="mb-2 text-xs font-medium uppercase tracking-[0.18em] text-even-blue-700">
-          Sprint 1 · M1.3
+          Sprint 4 · M4.1
         </p>
         <h1 className="mb-2 text-2xl font-semibold tracking-tight text-even-navy">
-          Drug typeahead
+          Drug row playground
         </h1>
         <p className="mb-8 text-sm text-even-ink-600">
-          Type a brand or generic name. Use ↑ ↓ to navigate and Enter to
-          pick. 2,174 drugs from the Pharmacy Formulary 2026 are indexed.
+          Type a drug, press Enter, watch the row materialise with smart
+          defaults already applied. Tap any chip to override. M4.2 wires
+          this into the encounter screen with real persistence.
         </p>
 
         <DrugTypeahead onSelect={add} autoFocus />
 
-        <div className="mt-10 flex items-center justify-between">
+        <div className="mt-10 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
           <h2 className="text-sm font-medium uppercase tracking-wider text-even-ink-500">
-            Picks · {picks.length}
+            Prescription · {lines.length} {lines.length === 1 ? 'drug' : 'drugs'}
+            {withDefaults > 0 && (
+              <span className="ml-2 text-[11px] normal-case tracking-normal text-even-ink-400">
+                ({withDefaults} with defaults applied)
+              </span>
+            )}
           </h2>
-          {picks.length > 0 && (
+          {lines.length > 0 && (
             <button
               type="button"
               onClick={clearAll}
@@ -86,89 +96,29 @@ export default function DrugsPage() {
           )}
         </div>
 
-        {picks.length === 0 ? (
+        {lines.length === 0 ? (
           <div className="mt-3 rounded-xl border border-dashed border-even-ink-200 bg-white p-6 text-center text-xs text-even-ink-400">
-            Picks land here. Try{' '}
-            <span className="font-mono text-even-navy">para</span>,{' '}
-            <span className="font-mono text-even-navy">cefur</span>, or{' '}
-            <span className="font-mono text-even-navy">insulin</span>.
+            Try <span className="font-mono text-even-navy">para</span>,{' '}
+            <span className="font-mono text-even-navy">amoxi</span>, or{' '}
+            <span className="font-mono text-even-navy">omez</span> — they
+            come back with frequency / duration / timing already filled in.
           </div>
         ) : (
-          <ul className="mt-3 space-y-2">
-            {picks.map((p, i) => (
-              <li
-                key={`${p.item_code}-${p.picked_at}`}
-                className="rounded-xl border border-even-ink-200 bg-white p-4"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-baseline gap-2">
-                      <span className="text-sm font-semibold text-even-navy">
-                        {p.brand_name}
-                      </span>
-                      {p.strength && (
-                        <span className="text-xs text-even-ink-500">
-                          {p.strength}
-                        </span>
-                      )}
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
-                          p.schedule_dc === 'X'
-                            ? 'bg-even-pink-200 text-even-pink-900'
-                            : p.schedule_dc === 'H1'
-                            ? 'bg-even-pink-100 text-even-pink-800'
-                            : p.schedule_dc === 'H'
-                            ? 'bg-even-ink-100 text-even-ink-700'
-                            : 'bg-even-ink-50 text-even-ink-500'
-                        }`}
-                      >
-                        {p.schedule_dc}
-                      </span>
-                      {p.is_high_risk && (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full bg-even-pink-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-even-pink-800"
-                          title="ISMP high-alert medication"
-                        >
-                          <span aria-hidden>⚠</span> High risk
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-1 text-xs text-even-ink-600">
-                      {p.generic_name} · {p.dosage_form} ·{' '}
-                      <span className="text-even-ink-400">
-                        {p.major_grouping}
-                      </span>
-                    </div>
-                    {p.lasa_alternates.length > 0 && (
-                      <div className="mt-1.5 text-[11px] text-even-ink-500">
-                        <span className="font-medium uppercase tracking-wider text-even-ink-400">
-                          LASA:
-                        </span>{' '}
-                        {p.lasa_alternates.join(', ')}
-                      </div>
-                    )}
-                    <div className="mt-2 font-mono text-[10px] text-even-ink-300">
-                      {p.item_code} · score {p.score.toFixed(2)}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => removeAt(i)}
-                    className="text-xs font-medium uppercase tracking-wider text-even-ink-400 hover:text-even-pink-700"
-                    aria-label={`Remove ${p.brand_name}`}
-                  >
-                    Remove
-                  </button>
-                </div>
-              </li>
+          <div className="mt-3 space-y-3">
+            {lines.map((line, idx) => (
+              <DrugRow
+                key={`${line.item_code}-${idx}`}
+                line={line}
+                onChange={(next) => update(idx, next)}
+                onRemove={() => removeAt(idx)}
+              />
             ))}
-          </ul>
+          </div>
         )}
 
         <p className="mt-12 text-[11px] text-even-ink-400">
-          Sprint 4 drops this component into the encounter screen&apos;s
-          prescription compose row. The schedule chip, high-risk badge, and
-          LASA list all carry into the real Rx flow.
+          Sprint 4 ships this inside the encounter screen with persistence
+          (M4.2) and LASA / Schedule X safety gates (M4.3).
         </p>
       </section>
     </main>
