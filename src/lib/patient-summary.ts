@@ -158,7 +158,7 @@ Rules:
   - If a problem appears resolved (e.g., URTI from 18 months ago, no recurrence), do not list it as active.
   - For cc_chip_rankings: re-rank ALL 24 standard chips in the order most likely to be relevant for this patient. Use exact chip labels from the provided catalogue. Do not invent.
   - For cc_chip_additions: 0 to 3 patient-specific net-new chip labels (e.g., "BP medication review", "HbA1c due"). These do NOT need to be in the standard catalogue.
-  - For disposition_recommendation: pick ONE of: discharge, follow_up, admit, refer, observe, send_diagnostics.
+  - For disposition_recommendation: pick ONE of: discharge, follow_up, refer, diagnostics, admit, vaccinate.
   - For disposition_additions: 0 to 2 short labels naming specialist referrals if relevant (e.g., "Refer to Dr. Iyer · Cardiology"). Empty array if none.
   - For red_flags: 0 to 5 items covering critical drug allergies, dangerous interactions, or recurring acute conditions.
   - Dates use YYYY-MM-DD or YYYY-MM. Use null if unknown.
@@ -171,7 +171,7 @@ Required output shape:
   "allergy_aggregation": [{ "allergen": "string", "source": "string", "confidence": "high|medium|low" }],
   "cc_chip_rankings": ["24 items, all from the standard catalogue, re-ordered"],
   "cc_chip_additions": ["0-3 patient-specific chip labels"],
-  "disposition_recommendation": "discharge|follow_up|admit|refer|observe|send_diagnostics",
+  "disposition_recommendation": "discharge|follow_up|refer|diagnostics|admit|vaccinate",
   "disposition_additions": ["0-2 strings"],
   "red_flags": [{ "kind": "allergy|drug_interaction|recurrence|other", "text": "string", "severity": "high|medium|low" }]
 }
@@ -182,10 +182,10 @@ export function buildSummaryUserMessage(bundle: SummaryInputBundle): string {
   const standardDispositions = [
     'discharge',
     'follow_up',
-    'admit',
     'refer',
-    'observe',
-    'send_diagnostics',
+    'diagnostics',
+    'admit',
+    'vaccinate',
   ];
 
   return JSON.stringify(
@@ -224,10 +224,10 @@ export type ValidationResult =
 const ALLOWED_DISPOSITIONS = new Set([
   'discharge',
   'follow_up',
-  'admit',
   'refer',
-  'observe',
-  'send_diagnostics',
+  'diagnostics',
+  'admit',
+  'vaccinate',
 ]);
 
 export function validateSummary(raw: unknown): ValidationResult {

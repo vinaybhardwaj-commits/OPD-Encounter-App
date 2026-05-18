@@ -88,13 +88,34 @@ export type EncounterPatient = {
   phone_e164: string | null;
 };
 
+/**
+ * PH.4 — patient-specific smartening fed by the cached Qwen summary.
+ * Empty arrays mean "no AI guidance, fall back to default order".
+ */
+export type EncounterAi = {
+  cc_chip_rankings: string[];
+  cc_chip_additions: string[];
+  disposition_recommendation: string | null;
+  disposition_additions: string[];
+};
+
+const AI_EMPTY: EncounterAi = {
+  cc_chip_rankings: [],
+  cc_chip_additions: [],
+  disposition_recommendation: null,
+  disposition_additions: [],
+};
+
 export function EncounterEditor({
   initial,
   patient,
+  ai,
 }: {
   initial: EncounterEditable;
   patient: EncounterPatient;
+  ai?: EncounterAi;
 }) {
+  const aiSafe: EncounterAi = ai ?? AI_EMPTY;
   const router = useRouter();
   const readOnly = initial.status === 'completed';
   const submitGated = initial.status === 'paused_diagnostics';
@@ -278,6 +299,8 @@ export function EncounterEditor({
             )
           }
           readOnly={readOnly}
+          ccRankings={aiSafe.cc_chip_rankings}
+          ccAdditions={aiSafe.cc_chip_additions}
         />
         <textarea
           value={cc}
@@ -662,44 +685,110 @@ function CcChipGrid({
   selected,
   onToggle,
   readOnly,
+  ccRankings,
+  ccAdditions,
 }: {
   selected: string[];
   onToggle: (label: string) => void;
   readOnly?: boolean;
+  ccRankings: string[];
+  ccAdditions: string[];
 }) {
   const sel = new Set(selected);
+
+  // PH.4: re-order each bucket using the patient's Qwen rankings.
+  // Chips not in `ccRankings` keep their original relative position
+  // after the ranked ones.
+  const rankIndex = new Map<string, number>();
+  ccRankings.forEach((label, i) => rankIndex.set(label, i));
+  const orderInBucket = (a: { label: string }, b: { label: string }) => {
+    const ai = rankIndex.has(a.label) ? rankIndex.get(a.label)! : Number.POSITIVE_INFINITY;
+    const bi = rankIndex.has(b.label) ? rankIndex.get(b.label)! : Number.POSITIVE_INFINITY;
+    return ai - bi;
+  };
+
   const buckets = [
     { name: 'Acute', cat: 'acute' as const },
     { name: 'Follow-up', cat: 'chronic' as const },
     { name: 'Routine', cat: 'routine' as const },
   ];
+
+  // De-dupe additions against the standard catalogue and against each other.
+  const standardSet = new Set(CC_CHIPS.map((c) => c.label));
+  const seenAdd = new Set<string>();
+  const additions = ccAdditions.filter((label) => {
+    if (!label || standardSet.has(label)) return false;
+    const k = label;
+    if (seenAdd.has(k)) return false;
+    seenAdd.add(k);
+    return true;
+  });
+
   return (
     <div className="space-y-3 rounded-xl border border-even-ink-100 bg-even-ink-50/40 p-3">
+      {additions.length > 0 && (
+        <div className="rounded-lg border border-violet-200 bg-violet-50/60 p-2">
+          <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-800">
+            <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
+            For this patient
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {additions.map((label) => {
+              const on = sel.has(label);
+              return (
+                <button
+                  key={`add-${label}`}
+                  type="button"
+                  disabled={readOnly}
+                  onClick={() => onToggle(label)}
+                  aria-pressed={on}
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed ${
+                    on
+                      ? 'bg-violet-600 text-white shadow-sm'
+                      : 'bg-white text-violet-900 ring-1 ring-violet-300 hover:ring-violet-500'
+                  }`}
+                >
+                  <span
+                    aria-hidden
+                    className={`inline-block h-1.5 w-1.5 rounded-full ${
+                      on ? 'bg-white' : 'bg-violet-500'
+                    }`}
+                  />
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {buckets.map((b) => (
         <div key={b.cat}>
           <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-even-ink-500">
             {b.name}
           </p>
           <div className="flex flex-wrap gap-1.5">
-            {CC_CHIPS.filter((c) => c.category === b.cat).map((c) => {
-              const on = sel.has(c.label);
-              return (
-                <button
-                  key={c.label}
-                  type="button"
-                  disabled={readOnly}
-                  onClick={() => onToggle(c.label)}
-                  aria-pressed={on}
-                  className={`rounded-full px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed ${
-                    on
-                      ? 'bg-even-blue text-white shadow-sm'
-                      : 'bg-white text-even-navy ring-1 ring-even-ink-200 hover:ring-even-blue-300'
-                  }`}
-                >
-                  {c.label}
-                </button>
-              );
-            })}
+            {CC_CHIPS.filter((c) => c.category === b.cat)
+              .slice()
+              .sort(orderInBucket)
+              .map((c) => {
+                const on = sel.has(c.label);
+                return (
+                  <button
+                    key={c.label}
+                    type="button"
+                    disabled={readOnly}
+                    onClick={() => onToggle(c.label)}
+                    aria-pressed={on}
+                    className={`rounded-full px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed ${
+                      on
+                        ? 'bg-even-blue text-white shadow-sm'
+                        : 'bg-white text-even-navy ring-1 ring-even-ink-200 hover:ring-even-blue-300'
+                    }`}
+                  >
+                    {c.label}
+                  </button>
+                );
+              })}
           </div>
         </div>
       ))}

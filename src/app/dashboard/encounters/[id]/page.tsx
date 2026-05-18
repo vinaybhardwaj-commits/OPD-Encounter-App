@@ -197,6 +197,7 @@ export default async function EncounterPage({
             sex: row.patient_sex,
             phone_e164: row.patient_phone_e164,
           }}
+          ai={panelData.ai}
           initial={{
             id: row.id,
             encounter_number: row.encounter_number,
@@ -229,10 +230,21 @@ export default async function EncounterPage({
  * completed encounters EXCLUDING the current one (we're already in it).
  * All queries run in parallel.
  */
+export type AiSmartening = {
+  cc_chip_rankings: string[];
+  cc_chip_additions: string[];
+  disposition_recommendation: string | null;
+  disposition_additions: string[];
+};
+
 async function loadHistoryPanelData(
   patientId: string,
   currentEncounterId: string,
-): Promise<{ summary: HPSummary; encounters: HPEncounterCard[] }> {
+): Promise<{
+  summary: HPSummary;
+  encounters: HPEncounterCard[];
+  ai: AiSmartening;
+}> {
   const [summaryRows, encounterRows, patientRows] = await Promise.all([
     pool.query<{
       summary: Record<string, unknown> | null;
@@ -280,6 +292,10 @@ async function loadHistoryPanelData(
     problem_list?: HPProblem[];
     allergy_aggregation?: { allergen?: string; source?: string }[];
     red_flags?: { kind?: string; text?: string }[];
+    cc_chip_rankings?: string[];
+    cc_chip_additions?: string[];
+    disposition_recommendation?: string;
+    disposition_additions?: string[];
   };
 
   // Build the allergy list (same merge logic as /patients/[id], compact).
@@ -329,5 +345,12 @@ async function loadHistoryPanelData(
     disposition: r.disposition,
   }));
 
-  return { summary, encounters };
+  const ai: AiSmartening = {
+    cc_chip_rankings: (sObj.cc_chip_rankings ?? []).filter((s): s is string => typeof s === 'string'),
+    cc_chip_additions: (sObj.cc_chip_additions ?? []).filter((s): s is string => typeof s === 'string').slice(0, 3),
+    disposition_recommendation: sObj.disposition_recommendation ?? null,
+    disposition_additions: (sObj.disposition_additions ?? []).filter((s): s is string => typeof s === 'string').slice(0, 2),
+  };
+
+  return { summary, encounters, ai };
 }

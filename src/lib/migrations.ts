@@ -334,6 +334,20 @@ export const MIGRATIONS: Migration[] = [
         ON qwen_call_audit(patient_id, called_at DESC);
     `,
   },
+  {
+    version: 7,
+    name: 'encounters_disposition_label_override',
+    sql: `
+      -- PH.4: patient-specific disposition labels.
+      -- When the doctor picks one of Qwen's net-new disposition_additions
+      -- (e.g. "Refer to Dr. Iyer · Cardiology"), the underlying
+      -- disposition enum still resolves to one of the 6 standard values
+      -- (typically 'refer') but the human-readable label override lets
+      -- the PDF + dashboard surface what the doctor actually picked.
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS disposition_label_override TEXT;
+    `,
+  },
 ];
 
 /**
