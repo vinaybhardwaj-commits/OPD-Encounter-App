@@ -70,12 +70,31 @@ export default async function EncounterPage({
   const row = rows[0];
   if (!row) notFound();
 
-  // Load any existing prescription draft for this encounter
-  const { rows: rxRows } = await pool.query<{ lines: PrescriptionLine[] | null }>(
-    `SELECT lines FROM prescriptions WHERE encounter_id = $1 LIMIT 1`,
+  // Load any existing prescription draft (+ dispatch state) for this encounter
+  const { rows: rxRows } = await pool.query<{
+    id: string;
+    prescription_number: string;
+    lines: PrescriptionLine[] | null;
+    pdf_blob_url: string | null;
+    patient_sent_at: string | null;
+    pharmacy_sent_at: string | null;
+  }>(
+    `SELECT id, prescription_number, lines, pdf_blob_url,
+            patient_sent_at, pharmacy_sent_at
+     FROM prescriptions WHERE encounter_id = $1 LIMIT 1`,
     [id],
   );
-  const prescriptionLines: PrescriptionLine[] = rxRows[0]?.lines ?? [];
+  const rx = rxRows[0];
+  const prescriptionLines: PrescriptionLine[] = rx?.lines ?? [];
+  const prescriptionMeta = rx
+    ? {
+        id: rx.id,
+        number: rx.prescription_number,
+        has_pdf: !!rx.pdf_blob_url,
+        patient_sent_at: rx.patient_sent_at,
+        pharmacy_sent_at: rx.pharmacy_sent_at,
+      }
+    : null;
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
@@ -116,6 +135,37 @@ export default async function EncounterPage({
             <p className="mt-3 inline-flex items-center gap-1 rounded-md bg-even-pink-100 px-2 py-1 text-xs font-medium text-even-pink-800">
               ⚠ Allergies: {row.patient_allergies}
             </p>
+          )}
+
+          {row.status === 'completed' && prescriptionMeta && (
+            <div className="mt-4 rounded-lg border border-even-blue-100 bg-even-blue-50/60 px-3 py-2.5 text-xs text-even-navy">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="font-semibold">Dispatched</span>
+                  <span className="ml-1 font-mono text-[11px] text-even-ink-500">
+                    {prescriptionMeta.number}
+                  </span>
+                  {prescriptionMeta.patient_sent_at && (
+                    <span className="ml-2 text-even-ink-500">
+                      · patient sent
+                    </span>
+                  )}
+                  {prescriptionMeta.pharmacy_sent_at && (
+                    <span className="text-even-ink-500"> · pharmacy sent</span>
+                  )}
+                </div>
+                {prescriptionMeta.has_pdf && (
+                  <Link
+                    href={`/api/prescriptions/${prescriptionMeta.id}/pdf`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 rounded-md border border-even-blue-300 bg-white px-3 py-1 text-[11px] font-semibold text-even-blue-700 hover:bg-even-blue-50"
+                  >
+                    View prescription PDF →
+                  </Link>
+                )}
+              </div>
+            </div>
           )}
         </div>
 
