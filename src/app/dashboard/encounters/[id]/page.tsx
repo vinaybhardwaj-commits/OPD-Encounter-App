@@ -11,6 +11,7 @@ import { notFound, redirect } from 'next/navigation';
 import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
 import { EncounterEditor, type EncounterEditable } from '@/components/EncounterEditor';
+import type { PrescriptionLine } from '@/components/DrugRow';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,6 +69,13 @@ export default async function EncounterPage({
   );
   const row = rows[0];
   if (!row) notFound();
+
+  // Load any existing prescription draft for this encounter
+  const { rows: rxRows } = await pool.query<{ lines: PrescriptionLine[] | null }>(
+    `SELECT lines FROM prescriptions WHERE encounter_id = $1 LIMIT 1`,
+    [id],
+  );
+  const prescriptionLines: PrescriptionLine[] = rxRows[0]?.lines ?? [];
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
@@ -127,6 +135,7 @@ export default async function EncounterPage({
             disposition: row.disposition as EncounterEditable['disposition'],
             follow_up_days: row.follow_up_days,
             referral_target: row.referral_target,
+            prescription_lines: prescriptionLines,
           }}
         />
       </section>

@@ -23,6 +23,8 @@ import { CC_CHIPS } from '@/lib/cc-chips';
 import { lookupIcd10 } from '@/lib/icd10';
 import { Icd10Typeahead } from './Icd10Typeahead';
 import { DictateButton } from './DictateButton';
+import { PrescriptionCompose } from './PrescriptionCompose';
+import type { PrescriptionLine } from './DrugRow';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -60,6 +62,7 @@ export type EncounterEditable = {
   disposition: Disposition | null;
   follow_up_days: number | null;
   referral_target: string | null;
+  prescription_lines: PrescriptionLine[];
 };
 
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -346,12 +349,16 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
         />
       </Section>
 
-      <Section label="Prescription" desc="Sprint 4 — drug rows + smart defaults.">
-        <div className="rounded-lg border border-dashed border-even-ink-200 bg-white p-4 text-center text-xs text-even-ink-400">
-          Compose flow ships in Sprint 4. The typeahead at{' '}
-          <span className="font-mono">/dashboard/drugs</span> previews the
-          drug picker.
-        </div>
+      <Section
+        label="Prescription"
+        desc="Add drugs; chips fill from defaults. Tap to override."
+        dictate={!readOnly ? { encounterId: initial.id, section: 'prescription' } : undefined}
+      >
+        <PrescriptionCompose
+          encounterId={initial.id}
+          initialLines={initial.prescription_lines ?? []}
+          readOnly={readOnly}
+        />
       </Section>
 
       <Section label="Disposition" desc="Required to submit." required>
