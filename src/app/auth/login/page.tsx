@@ -23,6 +23,11 @@ function LoginForm() {
       setError('That sign-in link is invalid or has expired. Request a new one.');
     } else if (e === 'not_authorized') {
       setError('This email is not authorized for the OPD Encounter App.');
+    } else if (e === 'wrong_role') {
+      const attempted = params.get('attempted') ?? '';
+      setError(
+        `You don't have access to ${attempted}. Sign in with an account that has the right role for that surface.`,
+      );
     }
   }, [params]);
 

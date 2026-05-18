@@ -1,5 +1,6 @@
 /**
- * Edge middleware — gates protected pages on session cookie validity.
+ * Edge middleware — gates protected pages on session cookie validity
+ * AND on role.
  *
  * Important Next.js gotcha (we learned this on EHRC and Even-ELO): the
  * middleware file MUST live at src/middleware.ts in src/-layout projects.
@@ -8,11 +9,27 @@
  *
  * Edge runtime can't import `next/headers`, so we verify the session JWT
  * inline using `jose` against the cookie value.
+ *
+ * Role-per-path matrix (v2.0.1):
+ *   /dashboard/*    → doctor
+ *   /reception/*    → cce
+ *   /triage/*       → nurse
+ *   /lab/*          → lab_tech
+ *   /admin/*        → any signed-in role (existing demo behaviour kept;
+ *                     full admin gate lands when /admin/users + /admin/rooms
+ *                     ship in v2.0.2 — that's when we tighten to role='admin')
+ *   /patients/*     → any signed-in role (longitudinal view is shared)
+ *
+ * Wrong-role users get bounced to /auth/login with ?error=wrong_role; the
+ * login page can render a hint.
  */
 import { NextResponse, type NextRequest } from 'next/server';
-import { jwtVerify } from 'jose';
+import { jwtVerify, type JWTPayload } from 'jose';
 
 const SESSION_COOKIE = 'opd_session';
+
+type Role = 'doctor' | 'nurse' | 'cce' | 'lab_tech' | 'admin';
+type SessionInfo = { email: string; role: Role } | null;
 
 function secret(): Uint8Array {
   const s = process.env.JWT_SECRET;
@@ -20,35 +37,70 @@ function secret(): Uint8Array {
   return new TextEncoder().encode(s);
 }
 
-async function isAuthed(token: string | undefined): Promise<boolean> {
-  if (!token) return false;
+async function readSession(token: string | undefined): Promise<SessionInfo> {
+  if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, secret());
-    return payload.purpose === 'session' && typeof payload.email === 'string';
+    const p = payload as Partial<JWTPayload & { email: string; role: Role; purpose: string }>;
+    if (p.purpose !== 'session' || !p.email) return null;
+    // v1 tokens lack a role claim; treat as 'doctor'.
+    const role: Role = (p.role as Role) ?? 'doctor';
+    return { email: p.email, role };
   } catch {
-    return false;
+    return null;
   }
 }
 
-export async function middleware(req: NextRequest) {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  const authed = await isAuthed(token);
+/**
+ * Map pathname prefix → allowed roles. First match wins.
+ * 'any' means any signed-in user can access.
+ */
+const ROLE_RULES: Array<{ prefix: string; allow: Role[] | 'any' }> = [
+  { prefix: '/dashboard', allow: ['doctor'] },
+  { prefix: '/reception', allow: ['cce', 'admin'] },
+  { prefix: '/triage', allow: ['nurse', 'admin'] },
+  { prefix: '/lab', allow: ['lab_tech', 'admin'] },
+  { prefix: '/admin', allow: 'any' },
+  { prefix: '/patients', allow: 'any' },
+];
 
-  if (!authed) {
+function allowedForPath(pathname: string, role: Role): boolean {
+  for (const rule of ROLE_RULES) {
+    if (pathname === rule.prefix || pathname.startsWith(rule.prefix + '/')) {
+      if (rule.allow === 'any') return true;
+      return rule.allow.includes(role);
+    }
+  }
+  return true; // No rule = pass-through (shouldn't happen given the matcher)
+}
+
+export async function middleware(req: NextRequest) {
+  const session = await readSession(req.cookies.get(SESSION_COOKIE)?.value);
+
+  if (!session) {
     const url = req.nextUrl.clone();
     url.pathname = '/auth/login';
     url.search = '';
     return NextResponse.redirect(url);
   }
 
+  if (!allowedForPath(req.nextUrl.pathname, session.role)) {
+    const url = req.nextUrl.clone();
+    url.pathname = '/auth/login';
+    url.search = '?error=wrong_role&attempted=' + encodeURIComponent(req.nextUrl.pathname);
+    return NextResponse.redirect(url);
+  }
+
   return NextResponse.next();
 }
 
-// Protect /dashboard and /admin (and everything under them). /auth/* and
-// /api/auth/* stay public so the magic-link flow can resolve. /admin is
-// gated the same way as /dashboard for the demo — any signed-in doctor
-// can hit the demo-controls panel. Production will introduce an admin
-// role check.
 export const config = {
-  matcher: ['/dashboard/:path*', '/admin/:path*', '/patients/:path*'],
+  matcher: [
+    '/dashboard/:path*',
+    '/admin/:path*',
+    '/patients/:path*',
+    '/reception/:path*',
+    '/triage/:path*',
+    '/lab/:path*',
+  ],
 };
