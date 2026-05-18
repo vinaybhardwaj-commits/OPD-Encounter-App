@@ -159,8 +159,12 @@ export async function POST(
 
   let audioBlobUrl: string;
   try {
+    // Store is configured private — `access: 'private'` produces a URL
+    // that requires the BLOB_READ_WRITE_TOKEN (or a signed URL) to
+    // serve. We never expose the URL to the doctor's browser; the
+    // server retrieves it later via @vercel/blob if needed.
     const uploaded = await put(blobPath, Buffer.from(audioBuffer), {
-      access: 'public',
+      access: 'private',
       contentType: mime,
       addRandomSuffix: true,
     });
