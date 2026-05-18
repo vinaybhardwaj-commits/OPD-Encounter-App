@@ -55,9 +55,18 @@ export type EncounterForPrompt = {
   prescription_lines: unknown | null;
 };
 
+export type DoctorOverrideRow = {
+  target_kind: string;
+  target_key: string;
+  action: string;
+  payload: Record<string, unknown> | null;
+  created_at: string;
+};
+
 export type SummaryInputBundle = {
   demographics: PatientDemographics;
   encounters: EncounterForPrompt[];
+  overrides: DoctorOverrideRow[];
   window_start: string; // ISO date
   window_end: string;
 };
@@ -133,7 +142,25 @@ export async function buildSummaryInput(patientId: string): Promise<SummaryInput
     prescription_lines: r.prescription_lines,
   }));
 
-  return { demographics, encounters, window_start, window_end };
+  // PH.5: pull doctor overrides for this patient. Newest-first so the
+  // most recent guidance wins when the same target was edited twice.
+  const { rows: overrideRows } = await pool.query<DoctorOverrideRow>(
+    `SELECT target_kind, target_key, action, payload,
+            created_at::text AS created_at
+       FROM doctor_overrides
+      WHERE patient_id = $1
+      ORDER BY created_at DESC
+      LIMIT 100`,
+    [patientId],
+  );
+
+  return {
+    demographics,
+    encounters,
+    overrides: overrideRows,
+    window_start,
+    window_end,
+  };
 }
 
 // -----------------------------------------------------------------------------
@@ -158,6 +185,7 @@ Rules:
   - If a problem appears resolved (e.g., URTI from 18 months ago, no recurrence), do not list it as active.
   - For cc_chip_rankings: re-rank ALL 24 standard chips in the order most likely to be relevant for this patient. Use exact chip labels from the provided catalogue. Do not invent.
   - For cc_chip_additions: 0 to 3 patient-specific net-new chip labels (e.g., "BP medication review", "HbA1c due"). These do NOT need to be in the standard catalogue.
+  - HONOUR doctor_overrides: when the input includes overrides (PH.5), treat them as authoritative. If an override marks a problem as "resolved" or "dismiss", DO NOT re-list it as active. If an override renames a problem, use the new label. If an override dismisses an allergy as false_positive, DO NOT include it in allergy_aggregation.
   - For disposition_recommendation: pick ONE of: discharge, follow_up, refer, diagnostics, admit, vaccinate.
   - For disposition_additions: 0 to 2 short labels naming specialist referrals if relevant (e.g., "Refer to Dr. Iyer · Cardiology"). Empty array if none.
   - For red_flags: 0 to 5 items covering critical drug allergies, dangerous interactions, or recurring acute conditions.
@@ -195,6 +223,8 @@ export function buildSummaryUserMessage(bundle: SummaryInputBundle): string {
       standard_dispositions: standardDispositions,
       window: { start: bundle.window_start, end: bundle.window_end },
       encounters: bundle.encounters,
+      // PH.5: doctor overrides — model must honour these.
+      doctor_overrides: bundle.overrides,
     },
     null,
     2,

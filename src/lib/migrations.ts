@@ -348,6 +348,32 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN IF NOT EXISTS disposition_label_override TEXT;
     `,
   },
+  {
+    version: 8,
+    name: 'doctor_overrides',
+    sql: `
+      -- PH.5: per-patient corrections the doctor makes to the AI summary.
+      -- These get folded back into the Qwen user-message on the next
+      -- recompute so the model honours "this is resolved" / "rename
+      -- this problem" / "dismiss this allergy" etc.
+      --
+      -- target_kind enumerates what was overridden; payload carries the
+      -- override-specific fields (jsonb) — keeps the schema small while
+      -- still being queryable per kind.
+      CREATE TABLE IF NOT EXISTS doctor_overrides (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+        doctor_id UUID REFERENCES doctors(id),
+        target_kind TEXT NOT NULL,        -- 'problem' | 'allergy' | 'cc_chip'
+        target_key TEXT NOT NULL,         -- label/text identifying the target
+        action TEXT NOT NULL,             -- 'edit' | 'dismiss' | 'add'
+        payload JSONB,                    -- { label?, status?, note?, ... }
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_doctor_overrides_patient
+        ON doctor_overrides(patient_id, target_kind);
+    `,
+  },
 ];
 
 /**

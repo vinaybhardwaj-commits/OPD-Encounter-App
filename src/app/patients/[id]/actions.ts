@@ -33,3 +33,42 @@ export async function actionRecompute(formData: FormData) {
   await recomputePatientSummary({ patientId, doctorId: doc.id });
   revalidatePath(`/patients/${patientId}`);
 }
+
+/**
+ * PH.5 — write a doctor override row. The next recompute will feed
+ * these to Qwen so the model honours the correction.
+ *
+ * Form payload (all optional except patient_id, target_kind, target_key, action):
+ *   patient_id, target_kind ('problem'|'allergy'|'cc_chip'), target_key,
+ *   action ('edit'|'dismiss'|'add'), label?, status?, note?
+ */
+export async function actionSaveOverride(formData: FormData) {
+  const doc = await requireDoctor();
+  const patientId = String(formData.get('patient_id') ?? '');
+  const targetKind = String(formData.get('target_kind') ?? '');
+  const targetKey = String(formData.get('target_key') ?? '');
+  const action = String(formData.get('action') ?? '');
+  if (!patientId || !targetKind || !targetKey || !action) return;
+
+  const payload: Record<string, unknown> = {};
+  for (const key of ['label', 'status', 'note'] as const) {
+    const v = formData.get(key);
+    if (typeof v === 'string' && v.trim() !== '') payload[key] = v.trim();
+  }
+
+  await pool.query(
+    `INSERT INTO doctor_overrides
+       (patient_id, doctor_id, target_kind, target_key, action, payload)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+    [
+      patientId,
+      doc.id,
+      targetKind,
+      targetKey,
+      action,
+      Object.keys(payload).length > 0 ? JSON.stringify(payload) : null,
+    ],
+  );
+
+  revalidatePath(`/patients/${patientId}`);
+}

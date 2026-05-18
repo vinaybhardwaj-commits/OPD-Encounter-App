@@ -18,7 +18,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
-import { actionRecompute } from './actions';
+import { actionRecompute, actionSaveOverride } from './actions';
 
 export const dynamic = 'force-dynamic';
 // Recompute server action calls Qwen (~5-47s warm/cold). 300s is the
@@ -138,8 +138,8 @@ export default async function PatientPage({
   const { id } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
 
-  // Load patient + cached summary + encounter timeline in parallel.
-  const [patientRows, summaryRows, encounterRows] = await Promise.all([
+  // Load patient + cached summary + doctor overrides + encounter timeline in parallel.
+  const [patientRows, summaryRows, overrideRows, encounterRows] = await Promise.all([
     pool.query<Patient>(
       `SELECT id, mrn, name, age_years, sex, phone_e164, known_allergies
          FROM patients WHERE id = $1 LIMIT 1`,
@@ -155,6 +155,20 @@ export default async function PatientPage({
               fail_reason
          FROM patient_summaries
         WHERE patient_id = $1 LIMIT 1`,
+      [id],
+    ),
+    pool.query<{
+      target_kind: string;
+      target_key: string;
+      action: string;
+      payload: Record<string, unknown> | null;
+      created_at: string;
+    }>(
+      `SELECT target_kind, target_key, action, payload,
+              created_at::text AS created_at
+         FROM doctor_overrides
+        WHERE patient_id = $1
+        ORDER BY created_at DESC`,
       [id],
     ),
     pool.query<EncounterCardRow>(
@@ -185,6 +199,7 @@ export default async function PatientPage({
   const summaryRow = summaryRows.rows[0] ?? null;
   const summary = (summaryRow?.summary ?? null) as ValidatedSummary | null;
   const encounters = encounterRows.rows;
+  const overrides = overrideRows.rows;
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
@@ -241,16 +256,22 @@ export default async function PatientPage({
         />
 
         {/* 3. Problem list */}
-        <ProblemListSection problems={summary?.problem_list ?? []} />
+        <ProblemListSection
+          patientId={patient.id}
+          problems={summary?.problem_list ?? []}
+          overrides={overrides}
+        />
 
         {/* 4. Medication history */}
         <MedicationHistorySection meds={summary?.medication_history ?? []} />
 
         {/* 5. Allergy + risk profile strip */}
         <AllergiesSection
+          patientId={patient.id}
           ownerAllergies={patient.known_allergies}
           aggregations={summary?.allergy_aggregation ?? []}
           redFlags={summary?.red_flags ?? []}
+          overrides={overrides}
         />
 
         {/* 6. Encounter timeline */}
@@ -372,7 +393,58 @@ function StatusPill({ status }: { status: string }) {
 // Problem list
 // ---------------------------------------------------------------------------
 
-function ProblemListSection({ problems }: { problems: ProblemListEntry[] }) {
+type OverrideRow = {
+  target_kind: string;
+  target_key: string;
+  action: string;
+  payload: Record<string, unknown> | null;
+  created_at: string;
+};
+
+function ProblemListSection({
+  patientId,
+  problems,
+  overrides,
+}: {
+  patientId: string;
+  problems: ProblemListEntry[];
+  overrides: OverrideRow[];
+}) {
+  // Apply problem overrides: dismiss → hide; edit → rename label / change status.
+  const problemOverrides = overrides.filter((o) => o.target_kind === 'problem');
+  const dismissed = new Set(
+    problemOverrides.filter((o) => o.action === 'dismiss').map((o) => o.target_key.toLowerCase()),
+  );
+  const editsByKey = new Map<string, Record<string, unknown>>();
+  for (const o of problemOverrides) {
+    if (o.action === 'edit' && o.payload) {
+      editsByKey.set(o.target_key.toLowerCase(), o.payload);
+    }
+  }
+  const customAdded = problemOverrides
+    .filter((o) => o.action === 'add')
+    .map((o) => ({
+      label: String(o.payload?.label ?? o.target_key),
+      status: String(o.payload?.status ?? 'active'),
+      note: typeof o.payload?.note === 'string' ? o.payload!.note : null,
+      from_doctor: true as const,
+    }));
+
+  const rendered = problems
+    .filter((p) => !dismissed.has((p.label ?? '').toLowerCase()))
+    .map((p) => {
+      const edit = editsByKey.get((p.label ?? '').toLowerCase());
+      if (!edit) return { ...p, from_doctor: false as const, note: null as string | null };
+      return {
+        ...p,
+        label: typeof edit.label === 'string' ? edit.label : p.label,
+        status: typeof edit.status === 'string' ? edit.status : p.status,
+        note: typeof edit.note === 'string' ? edit.note : null,
+        from_doctor: false as const,
+      };
+    })
+    .concat(customAdded as never[]);
+
   return (
     <div className="mt-6 rounded-xl border border-even-ink-200 bg-white p-5">
       <div className="mb-3 flex items-center justify-between">
@@ -381,67 +453,190 @@ function ProblemListSection({ problems }: { problems: ProblemListEntry[] }) {
             Problem list
           </h2>
           <span className="rounded-full border border-even-ink-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-even-ink-500">
-            {problems.length}
+            {rendered.length}
           </span>
         </div>
-        <span className="text-[10px] uppercase tracking-wider text-even-ink-400">
-          Edit ships in PH.5
-        </span>
+        <AddProblemControl patientId={patientId} />
       </div>
 
-      {problems.length === 0 ? (
-        <p className="text-sm text-even-ink-500">
-          No problems on file yet.
-        </p>
+      {rendered.length === 0 ? (
+        <p className="text-sm text-even-ink-500">No problems on file yet.</p>
       ) : (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-even-ink-100 text-left text-[10px] uppercase tracking-wider text-even-ink-500">
-              <th className="py-2 pr-3 font-medium">Problem</th>
-              <th className="py-2 pr-3 font-medium">Status</th>
-              <th className="py-2 pr-3 font-medium">On</th>
-              <th className="py-2 pr-3 font-medium">Last managed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {problems.map((p, i) => (
-              <tr
-                key={`${p.label ?? 'x'}-${i}`}
-                className="border-b border-even-ink-100/50 last:border-b-0"
-              >
-                <td className="py-2 pr-3 align-top">
-                  <div className="flex items-center gap-2">
-                    <span
-                      aria-label="AI-derived"
-                      className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500"
-                    />
-                    <div className="text-sm font-medium text-even-navy">
-                      {p.label ?? '—'}
+        <ul className="divide-y divide-even-ink-100">
+          {rendered.map((p, i) => {
+            const label = (p.label ?? '—') as string;
+            return (
+              <li key={`${label}-${i}`} className="py-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        aria-label={p.from_doctor ? 'Doctor-added' : 'AI-derived'}
+                        className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                          p.from_doctor ? 'bg-even-navy' : 'bg-violet-500'
+                        }`}
+                      />
+                      <div className="text-sm font-medium text-even-navy">{label}</div>
+                      <ProblemStatusPill status={(p.status as string) ?? 'active'} />
                     </div>
+                    <div className="ml-3.5 mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-even-ink-500">
+                      {p.since ? <span>since {p.since}</span> : null}
+                      {(p.current_meds?.length ?? 0) > 0 ? (
+                        <span>meds: {(p.current_meds ?? []).join(', ')}</span>
+                      ) : null}
+                      {p.last_managed_at ? <span>last: {p.last_managed_at}</span> : null}
+                    </div>
+                    {p.note ? (
+                      <div className="ml-3.5 mt-1 rounded-md border border-even-ink-100 bg-even-ink-50 px-2 py-1 text-[11px] text-even-ink-600">
+                        Note: {p.note}
+                      </div>
+                    ) : null}
                   </div>
-                  {p.since ? (
-                    <div className="ml-3.5 text-[10px] uppercase tracking-wider text-even-ink-400">
-                      since {p.since}
-                    </div>
-                  ) : null}
-                </td>
-                <td className="py-2 pr-3 align-top">
-                  <ProblemStatusPill status={p.status ?? 'active'} />
-                </td>
-                <td className="py-2 pr-3 align-top text-xs text-even-ink-600">
-                  {(p.current_meds ?? []).join(', ') || (
-                    <span className="text-even-ink-400">—</span>
-                  )}
-                </td>
-                <td className="py-2 pr-3 align-top text-xs text-even-ink-500">
-                  {p.last_managed_at ?? '—'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  <ProblemRowControls patientId={patientId} label={label} status={(p.status as string) ?? 'active'} />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
+  );
+}
+
+function ProblemRowControls({
+  patientId,
+  label,
+  status,
+}: {
+  patientId: string;
+  label: string;
+  status: string;
+}) {
+  return (
+    <details className="shrink-0">
+      <summary className="cursor-pointer list-none rounded-md border border-even-ink-200 bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-even-ink-600 hover:border-even-ink-300 hover:text-even-navy">
+        Edit
+      </summary>
+      <div className="absolute z-10 mt-1 w-72 rounded-lg border border-even-ink-200 bg-white p-3 shadow-lg">
+        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-even-ink-500">
+          Edit problem
+        </p>
+        <form action={actionSaveOverride} className="space-y-2">
+          <input type="hidden" name="patient_id" value={patientId} />
+          <input type="hidden" name="target_kind" value="problem" />
+          <input type="hidden" name="target_key" value={label} />
+          <input type="hidden" name="action" value="edit" />
+          <label className="block text-xs text-even-ink-600">
+            <span className="mb-0.5 block text-[10px] uppercase tracking-wider text-even-ink-500">Label</span>
+            <input
+              name="label"
+              defaultValue={label}
+              className="w-full rounded-md border border-even-ink-200 bg-white px-2 py-1 text-xs focus:border-even-blue focus:outline-none focus:ring-1 focus:ring-even-blue-100"
+            />
+          </label>
+          <label className="block text-xs text-even-ink-600">
+            <span className="mb-0.5 block text-[10px] uppercase tracking-wider text-even-ink-500">Status</span>
+            <select
+              name="status"
+              defaultValue={status}
+              className="w-full rounded-md border border-even-ink-200 bg-white px-2 py-1 text-xs"
+            >
+              <option value="active">active</option>
+              <option value="controlled">controlled</option>
+              <option value="resolved">resolved</option>
+            </select>
+          </label>
+          <label className="block text-xs text-even-ink-600">
+            <span className="mb-0.5 block text-[10px] uppercase tracking-wider text-even-ink-500">Doctor note</span>
+            <textarea
+              name="note"
+              rows={2}
+              placeholder="optional"
+              className="w-full rounded-md border border-even-ink-200 bg-white px-2 py-1 text-xs"
+            />
+          </label>
+          <button
+            type="submit"
+            className="w-full rounded-md bg-even-blue px-2 py-1.5 text-xs font-semibold text-white hover:bg-even-blue-700"
+          >
+            Save override
+          </button>
+        </form>
+        <form action={actionSaveOverride} className="mt-2">
+          <input type="hidden" name="patient_id" value={patientId} />
+          <input type="hidden" name="target_kind" value="problem" />
+          <input type="hidden" name="target_key" value={label} />
+          <input type="hidden" name="action" value="dismiss" />
+          <button
+            type="submit"
+            className="w-full rounded-md border border-even-pink-200 bg-even-pink-50 px-2 py-1.5 text-xs font-semibold text-even-pink-800 hover:bg-even-pink-100"
+          >
+            Dismiss (not a problem)
+          </button>
+        </form>
+      </div>
+    </details>
+  );
+}
+
+function AddProblemControl({ patientId }: { patientId: string }) {
+  return (
+    <details className="relative">
+      <summary className="cursor-pointer list-none rounded-md border border-even-blue-300 bg-even-blue-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-even-blue-700 hover:bg-even-blue-100">
+        + Add problem
+      </summary>
+      <div className="absolute right-0 z-10 mt-1 w-72 rounded-lg border border-even-ink-200 bg-white p-3 shadow-lg">
+        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-even-ink-500">
+          Add a custom problem
+        </p>
+        <form action={actionSaveOverride} className="space-y-2">
+          <input type="hidden" name="patient_id" value={patientId} />
+          <input type="hidden" name="target_kind" value="problem" />
+          <input type="hidden" name="action" value="add" />
+          <input
+            type="hidden"
+            name="target_key"
+            value="__doctor_added__"
+          />
+          <label className="block text-xs">
+            <span className="mb-0.5 block text-[10px] uppercase tracking-wider text-even-ink-500">Label</span>
+            <input
+              name="label"
+              required
+              placeholder="e.g., GERD"
+              className="w-full rounded-md border border-even-ink-200 bg-white px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-0.5 block text-[10px] uppercase tracking-wider text-even-ink-500">Status</span>
+            <select
+              name="status"
+              defaultValue="active"
+              className="w-full rounded-md border border-even-ink-200 bg-white px-2 py-1 text-xs"
+            >
+              <option value="active">active</option>
+              <option value="controlled">controlled</option>
+              <option value="resolved">resolved</option>
+            </select>
+          </label>
+          <label className="block text-xs">
+            <span className="mb-0.5 block text-[10px] uppercase tracking-wider text-even-ink-500">Note</span>
+            <textarea
+              name="note"
+              rows={2}
+              placeholder="optional"
+              className="w-full rounded-md border border-even-ink-200 bg-white px-2 py-1 text-xs"
+            />
+          </label>
+          <button
+            type="submit"
+            className="w-full rounded-md bg-even-blue px-2 py-1.5 text-xs font-semibold text-white hover:bg-even-blue-700"
+          >
+            Add problem
+          </button>
+        </form>
+      </div>
+    </details>
   );
 }
 
@@ -556,14 +751,24 @@ function MedicationHistorySection({
 // ---------------------------------------------------------------------------
 
 function AllergiesSection({
+  patientId,
   ownerAllergies,
   aggregations,
   redFlags,
+  overrides,
 }: {
+  patientId: string;
   ownerAllergies: string | null;
   aggregations: AllergyAggregationEntry[];
   redFlags: { kind?: string; text?: string; severity?: string }[];
+  overrides: OverrideRow[];
 }) {
+  // Apply allergy dismissals — drop entries the doctor marked false_positive.
+  const dismissed = new Set(
+    overrides
+      .filter((o) => o.target_kind === 'allergy' && o.action === 'dismiss')
+      .map((o) => o.target_key.toLowerCase()),
+  );
   // Merge: doctor-entered free text (patients.known_allergies) +
   // AI-aggregated entries + red-flag rows with kind='allergy'.
   // Dedupe loosely on lowercased allergen string.
@@ -580,7 +785,7 @@ function AllergiesSection({
       const a = piece.trim();
       if (!a) continue;
       const k = a.toLowerCase();
-      if (seen.has(k)) continue;
+      if (seen.has(k) || dismissed.has(k)) continue;
       seen.add(k);
       items.push({
         allergen: a,
@@ -593,7 +798,7 @@ function AllergiesSection({
   for (const a of aggregations) {
     if (!a.allergen) continue;
     const k = a.allergen.toLowerCase();
-    if (seen.has(k)) continue;
+    if (seen.has(k) || dismissed.has(k)) continue;
     seen.add(k);
     items.push({
       allergen: a.allergen,
@@ -605,7 +810,7 @@ function AllergiesSection({
   const allergyFlags = redFlags.filter((f) => f.kind === 'allergy' && f.text);
   for (const f of allergyFlags) {
     const k = (f.text ?? '').toLowerCase();
-    if (!k || seen.has(k)) continue;
+    if (!k || seen.has(k) || dismissed.has(k)) continue;
     seen.add(k);
     items.push({
       allergen: f.text ?? '—',
@@ -657,6 +862,19 @@ function AllergiesSection({
                   {it.confidence ? <> · {it.confidence} confidence</> : null}
                 </div>
               </div>
+              <form action={actionSaveOverride}>
+                <input type="hidden" name="patient_id" value={patientId} />
+                <input type="hidden" name="target_kind" value="allergy" />
+                <input type="hidden" name="target_key" value={it.allergen} />
+                <input type="hidden" name="action" value="dismiss" />
+                <button
+                  type="submit"
+                  aria-label={`Dismiss ${it.allergen}`}
+                  className="ml-2 rounded-md border border-even-pink-200 bg-white px-2 py-1 text-[10px] font-medium text-even-pink-700 hover:border-even-pink-300 hover:bg-even-pink-50"
+                >
+                  Dismiss
+                </button>
+              </form>
             </li>
           ))}
           {nonAllergyFlags.map((f, i) => (
