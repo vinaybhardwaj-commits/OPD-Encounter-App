@@ -19,6 +19,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
 // -----------------------------------------------------------------------------
@@ -53,6 +54,7 @@ export type HPSummary = {
   problems: HPProblem[];
   allergies: HPAllergy[];
   computed_at: string | null;
+  fail_reason?: string | null;
 };
 
 export type HistoryPanelProps = {
@@ -65,8 +67,39 @@ export type HistoryPanelProps = {
 const LS_KEY = 'ph3.panel_open';
 
 export function HistoryPanel(props: HistoryPanelProps) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [recomputing, setRecomputing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onRecompute() {
+    if (recomputing) return;
+    setRecomputing(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/internal/recompute-summary?patient_id=${props.patientId}`,
+        { method: 'POST', cache: 'no-store' },
+      );
+      if (!res.ok) {
+        // 5xx or auth issue
+        setError(`Recompute failed (${res.status})`);
+        return;
+      }
+      const j = (await res.json()) as { ok?: boolean; reason?: string };
+      if (j.ok === false) {
+        setError(j.reason ?? 'Recompute failed');
+        return;
+      }
+      // Pull fresh server data into the panel via router refresh.
+      router.refresh();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Network error');
+    } finally {
+      setRecomputing(false);
+    }
+  }
 
   // Restore preference from localStorage after mount to avoid SSR mismatch.
   useEffect(() => {
@@ -131,12 +164,20 @@ export function HistoryPanel(props: HistoryPanelProps) {
           onClose={() => persist(false)}
         />
         <div className="flex-1 overflow-y-auto px-4 py-3">
-          <SummaryLine summary={props.summary} />
+          <SummaryLine
+            summary={props.summary}
+            recomputing={recomputing}
+            error={error}
+          />
           <Problems problems={props.summary.problems} />
           <Allergies items={props.summary.allergies} />
           <RecentEncounters encounters={props.encounters} />
         </div>
-        <PanelFooter computedAt={props.summary.computed_at} />
+        <PanelFooter
+          computedAt={props.summary.computed_at}
+          recomputing={recomputing}
+          onRecompute={onRecompute}
+        />
       </aside>
     </>
   );
@@ -182,34 +223,80 @@ function PanelHeader({
   );
 }
 
-function PanelFooter({ computedAt }: { computedAt: string | null }) {
+function PanelFooter({
+  computedAt,
+  recomputing,
+  onRecompute,
+}: {
+  computedAt: string | null;
+  recomputing: boolean;
+  onRecompute: () => void;
+}) {
   return (
-    <div className="border-t border-violet-100 bg-violet-50/40 px-4 py-2 text-[10px] uppercase tracking-wider text-violet-800">
-      AI summary{computedAt ? ` · computed ${timeAgo(computedAt)}` : ''}
+    <div className="flex items-center justify-between gap-3 border-t border-violet-100 bg-violet-50/40 px-4 py-2 text-[10px] uppercase tracking-wider text-violet-800">
+      <span>
+        AI summary
+        {computedAt ? ` · computed ${timeAgo(computedAt)}` : ''}
+      </span>
+      <button
+        type="button"
+        onClick={onRecompute}
+        disabled={recomputing}
+        className="rounded-md border border-violet-300 bg-white px-2 py-1 text-[10px] font-semibold normal-case tracking-normal text-violet-800 transition hover:bg-violet-100 disabled:cursor-wait disabled:opacity-60"
+      >
+        {recomputing ? 'Recomputing…' : 'Recompute'}
+      </button>
     </div>
   );
 }
 
-function SummaryLine({ summary }: { summary: HPSummary }) {
+function SummaryLine({
+  summary,
+  recomputing,
+  error,
+}: {
+  summary: HPSummary;
+  recomputing: boolean;
+  error: string | null;
+}) {
+  // When the doctor just hit Recompute, render the skeleton even before
+  // the server data swaps over to status='computing'.
+  if (recomputing) {
+    return <Skeleton lines={2} />;
+  }
+  if (error) {
+    return (
+      <div className="mb-3 rounded-md border border-even-pink-200 bg-even-pink-50 px-3 py-2 text-xs text-even-pink-800">
+        {error}. Try Recompute again, or check that the LLM tunnel is up.
+      </div>
+    );
+  }
   if (summary.status === 'missing') {
     return (
       <div className="mb-3 rounded-md border border-even-ink-200 bg-white px-3 py-2 text-xs text-even-ink-500">
-        No AI summary yet — click <span className="font-mono">Recompute</span>{' '}
-        on the longitudinal view.
+        No AI summary yet — tap{' '}
+        <span className="font-mono">Recompute</span> below.
       </div>
     );
   }
   if (summary.status === 'computing') {
+    return <Skeleton lines={2} />;
+  }
+  if (summary.status === 'failed') {
     return (
-      <div className="mb-3 rounded-md border border-even-ink-200 bg-even-ink-50 px-3 py-2 text-xs text-even-ink-600">
-        Computing summary…
+      <div className="mb-3 rounded-md border border-even-pink-200 bg-even-pink-50 px-3 py-2 text-xs text-even-pink-800">
+        Last attempt failed
+        {summary.fail_reason ? (
+          <>: <span className="font-mono">{summary.fail_reason}</span></>
+        ) : null}
+        . Tap Recompute to retry.
       </div>
     );
   }
-  if (summary.status === 'failed' || !summary.summary_text) {
+  if (!summary.summary_text) {
     return (
-      <div className="mb-3 rounded-md border border-even-pink-200 bg-even-pink-50 px-3 py-2 text-xs text-even-pink-800">
-        Summary unavailable. Try Recompute from the longitudinal view.
+      <div className="mb-3 rounded-md border border-even-ink-200 bg-white px-3 py-2 text-xs text-even-ink-500">
+        Summary text empty. Tap Recompute.
       </div>
     );
   }
@@ -217,6 +304,20 @@ function SummaryLine({ summary }: { summary: HPSummary }) {
     <p className="mb-3 text-sm leading-snug text-even-navy">
       {summary.summary_text}
     </p>
+  );
+}
+
+function Skeleton({ lines }: { lines: number }) {
+  return (
+    <div className="mb-3 animate-pulse space-y-1.5">
+      {Array.from({ length: lines }).map((_, i) => (
+        <div
+          key={i}
+          className="h-3 rounded bg-violet-100"
+          style={{ width: `${100 - i * 15}%` }}
+        />
+      ))}
+    </div>
   );
 }
 

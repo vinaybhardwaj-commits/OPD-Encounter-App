@@ -238,8 +238,11 @@ async function loadHistoryPanelData(
       summary: Record<string, unknown> | null;
       status: string;
       computed_at: string | null;
+      fail_reason: string | null;
     }>(
-      `SELECT summary, status, computed_at::text AS computed_at
+      `SELECT summary, status,
+              computed_at::text AS computed_at,
+              fail_reason
          FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
       [patientId],
     ),
@@ -314,6 +317,7 @@ async function loadHistoryPanelData(
     problems: (sObj.problem_list ?? []).slice(0, 4),
     allergies,
     computed_at: sRow?.computed_at ?? null,
+    fail_reason: sRow?.fail_reason ?? null,
   };
 
   const encounters: HPEncounterCard[] = encounterRows.rows.map((r) => ({
