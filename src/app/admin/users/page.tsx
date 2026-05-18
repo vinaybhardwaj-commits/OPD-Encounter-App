@@ -14,7 +14,13 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
 import { pool } from '@/lib/db';
-import { actionCreateInvite, actionRevokeInvite } from './actions';
+import {
+  actionCreateInvite,
+  actionRevokeInvite,
+  actionChangeRole,
+  actionDeactivate,
+  actionReactivate,
+} from './actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,6 +30,7 @@ type UserRow = {
   name: string;
   role: string;
   created_at: string;
+  deactivated_at: string | null;
 };
 
 type InviteRow = {
@@ -43,7 +50,9 @@ export default async function AdminUsersPage() {
 
   const [usersRes, invitesRes] = await Promise.all([
     pool.query<UserRow>(
-      `SELECT id, email, name, role, created_at::text AS created_at
+      `SELECT id, email, name, role,
+              created_at::text AS created_at,
+              deactivated_at::text AS deactivated_at
          FROM doctors ORDER BY role ASC, name ASC`,
     ),
     pool.query<InviteRow>(
@@ -207,17 +216,7 @@ export default async function AdminUsersPage() {
                 </p>
                 <ul className="space-y-1">
                   {list.map((u) => (
-                    <li
-                      key={u.id}
-                      className="flex items-center justify-between gap-3 rounded border border-even-ink-100 bg-white px-3 py-1.5 text-sm"
-                    >
-                      <div>
-                        <span className="font-medium text-even-navy">{u.name}</span>
-                        <span className="ml-2 font-mono text-[11px] text-even-ink-500">
-                          {u.email}
-                        </span>
-                      </div>
-                    </li>
+                    <UserRowControls key={u.id} user={u} />
                   ))}
                 </ul>
               </div>
@@ -226,5 +225,71 @@ export default async function AdminUsersPage() {
         </div>
       </section>
     </main>
+  );
+}
+
+function UserRowControls({ user }: { user: UserRow }) {
+  const isDeactivated = !!user.deactivated_at;
+  return (
+    <li
+      className={`flex flex-wrap items-center justify-between gap-3 rounded border px-3 py-1.5 text-sm ${
+        isDeactivated
+          ? 'border-even-ink-200 bg-even-ink-50/60 opacity-70'
+          : 'border-even-ink-100 bg-white'
+      }`}
+    >
+      <div className="min-w-0 flex-1">
+        <span className="font-medium text-even-navy">{user.name}</span>
+        <span className="ml-2 font-mono text-[11px] text-even-ink-500">{user.email}</span>
+        {isDeactivated && (
+          <span className="ml-2 rounded-full border border-even-pink-200 bg-even-pink-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-even-pink-800">
+            deactivated
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <form action={actionChangeRole}>
+          <input type="hidden" name="user_id" value={user.id} />
+          <select
+            name="role"
+            defaultValue={user.role}
+            className="rounded-md border border-even-ink-200 bg-white px-2 py-1 text-xs"
+          >
+            <option value="doctor">doctor</option>
+            <option value="nurse">nurse</option>
+            <option value="cce">cce</option>
+            <option value="lab_tech">lab_tech</option>
+            <option value="admin">admin</option>
+          </select>
+          <button
+            type="submit"
+            className="ml-1 rounded-md border border-even-ink-200 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-even-ink-600 hover:border-even-ink-300 hover:text-even-navy"
+          >
+            Save
+          </button>
+        </form>
+        {isDeactivated ? (
+          <form action={actionReactivate}>
+            <input type="hidden" name="user_id" value={user.id} />
+            <button
+              type="submit"
+              className="rounded-md border border-even-blue-200 bg-even-blue-50 px-2 py-1 text-[10px] font-semibold text-even-blue-800 hover:bg-even-blue-100"
+            >
+              Reactivate
+            </button>
+          </form>
+        ) : (
+          <form action={actionDeactivate}>
+            <input type="hidden" name="user_id" value={user.id} />
+            <button
+              type="submit"
+              className="rounded-md border border-even-pink-200 bg-even-pink-50 px-2 py-1 text-[10px] font-semibold text-even-pink-800 hover:bg-even-pink-100"
+            >
+              Deactivate
+            </button>
+          </form>
+        )}
+      </div>
+    </li>
   );
 }

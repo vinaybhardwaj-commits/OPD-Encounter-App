@@ -534,6 +534,32 @@ export const MIGRATIONS: Migration[] = [
         ON invite_tokens(expires_at) WHERE accepted_at IS NULL;
     `,
   },
+  {
+    version: 17,
+    name: 'users_deactivated_at',
+    sql: `
+      -- v2.0.2: admin can deactivate users (e.g. resigned staff) without
+      -- losing their historical attribution on encounters / overrides /
+      -- audit rows. deactivated_at non-NULL means the user can no longer
+      -- sign in.
+      ALTER TABLE doctors
+        ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+      CREATE INDEX IF NOT EXISTS idx_doctors_active
+        ON doctors(role) WHERE deactivated_at IS NULL;
+    `,
+  },
+  {
+    version: 18,
+    name: 'seed_admin_user',
+    sql: `
+      -- v2.0.2: ensure at least one admin user exists for /admin gate.
+      -- V (vinay.bhardwaj@even.in) keeps role='doctor' for clinical
+      -- workflow; the admin row is a separate identity.
+      INSERT INTO doctors (email, name, mci_registration_number, role)
+      VALUES ('admin@even.in', 'Admin', 'EH-EMP-ADMIN-001', 'admin')
+      ON CONFLICT (email) DO UPDATE SET role = 'admin';
+    `,
+  },
 ];
 
 /**

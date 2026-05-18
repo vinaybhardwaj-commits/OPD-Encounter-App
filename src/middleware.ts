@@ -54,17 +54,26 @@ async function readSession(token: string | undefined): Promise<SessionInfo> {
 /**
  * Map pathname prefix → allowed roles. First match wins.
  * 'any' means any signed-in user can access.
+ *
+ * v2.0.2: 'admin' is a SUPERUSER — granted access to every protected
+ * surface regardless of the prefix's allow-list. /admin/* itself is
+ * tightened to admin-only.
  */
 const ROLE_RULES: Array<{ prefix: string; allow: Role[] | 'any' }> = [
   { prefix: '/dashboard', allow: ['doctor'] },
-  { prefix: '/reception', allow: ['cce', 'admin'] },
-  { prefix: '/triage', allow: ['nurse', 'admin'] },
-  { prefix: '/lab', allow: ['lab_tech', 'admin'] },
-  { prefix: '/admin', allow: 'any' },
+  { prefix: '/reception', allow: ['cce'] },
+  { prefix: '/triage', allow: ['nurse'] },
+  { prefix: '/lab', allow: ['lab_tech'] },
+  // /admin/demo-controls is the v1 demo-reset helper. Kept open so V's
+  // doctor login can still reset the queue between practice runs. The
+  // real admin surfaces (/admin/users, /admin/rooms) are admin-only.
+  { prefix: '/admin/demo-controls', allow: 'any' },
+  { prefix: '/admin', allow: ['admin'] },
   { prefix: '/patients', allow: 'any' },
 ];
 
 function allowedForPath(pathname: string, role: Role): boolean {
+  if (role === 'admin') return true; // superuser
   for (const rule of ROLE_RULES) {
     if (pathname === rule.prefix || pathname.startsWith(rule.prefix + '/')) {
       if (rule.allow === 'any') return true;

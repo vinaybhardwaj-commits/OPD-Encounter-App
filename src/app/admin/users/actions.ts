@@ -69,3 +69,35 @@ export async function actionRevokeInvite(formData: FormData) {
   );
   revalidatePath('/admin/users');
 }
+
+// v2.0.2 additions ─────────────────────────────────────────────────────
+
+export async function actionChangeRole(formData: FormData) {
+  await requireSession();
+  const userId = String(formData.get('user_id') ?? '');
+  const newRole = String(formData.get('role') ?? '');
+  if (!userId || !ALLOWED_ROLES.has(newRole)) return;
+  await pool.query(`UPDATE doctors SET role = $1 WHERE id = $2`, [newRole, userId]);
+  revalidatePath('/admin/users');
+}
+
+export async function actionDeactivate(formData: FormData) {
+  await requireSession();
+  const userId = String(formData.get('user_id') ?? '');
+  if (!userId) return;
+  // Idempotent — sets deactivated_at to NOW() only if currently NULL.
+  await pool.query(
+    `UPDATE doctors SET deactivated_at = NOW()
+      WHERE id = $1 AND deactivated_at IS NULL`,
+    [userId],
+  );
+  revalidatePath('/admin/users');
+}
+
+export async function actionReactivate(formData: FormData) {
+  await requireSession();
+  const userId = String(formData.get('user_id') ?? '');
+  if (!userId) return;
+  await pool.query(`UPDATE doctors SET deactivated_at = NULL WHERE id = $1`, [userId]);
+  revalidatePath('/admin/users');
+}

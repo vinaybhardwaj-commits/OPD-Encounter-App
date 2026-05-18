@@ -171,7 +171,10 @@ export async function isAllowedEmail(email: string): Promise<boolean> {
   if (!e) return false;
   try {
     const { rows } = await pool.query<{ count: string }>(
-      'SELECT COUNT(*)::text AS count FROM doctors WHERE lower(email) = $1',
+      `SELECT COUNT(*)::text AS count
+         FROM doctors
+        WHERE lower(email) = $1
+          AND deactivated_at IS NULL`,
       [e],
     );
     return parseInt(rows[0]?.count ?? '0', 10) > 0;
