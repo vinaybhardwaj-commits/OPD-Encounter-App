@@ -12,10 +12,18 @@ import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
 import { EncounterEditor, type EncounterEditable } from '@/components/EncounterEditor';
 import type { PrescriptionLine } from '@/components/DrugRow';
+import {
+  HistoryPanel,
+  type HPEncounterCard,
+  type HPSummary,
+  type HPProblem,
+  type HPAllergy,
+} from '@/components/HistoryPanel';
 
 export const dynamic = 'force-dynamic';
 
 type Row = EncounterEditable & {
+  patient_id: string;
   patient_name: string;
   patient_mrn: string;
   patient_age_years: number;
@@ -41,6 +49,7 @@ export default async function EncounterPage({
   const { rows } = await pool.query<Row>(
     `SELECT
        e.id,
+       e.patient_id,
        e.encounter_number,
        e.status::text AS status,
        e.started_at,
@@ -86,6 +95,11 @@ export default async function EncounterPage({
   );
   const rx = rxRows[0];
   const prescriptionLines: PrescriptionLine[] = rx?.lines ?? [];
+
+  // Load patient history for the PH.3 left panel — cached Qwen summary
+  // + last 5 completed encounters. Cheap, runs in parallel-ish with
+  // the prescription fetch (network round-trip dominates).
+  const panelData = await loadHistoryPanelData(row.patient_id, id);
   const prescriptionMeta = rx
     ? {
         id: rx.id,
@@ -98,6 +112,12 @@ export default async function EncounterPage({
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
+      <HistoryPanel
+        patientId={row.patient_id}
+        patientName={row.patient_name}
+        summary={panelData.summary}
+        encounters={panelData.encounters}
+      />
       <header className="border-b border-even-ink-100 bg-white">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-4">
           <Link
@@ -198,4 +218,112 @@ export default async function EncounterPage({
       </section>
     </main>
   );
+}
+
+// ---------------------------------------------------------------------------
+// HistoryPanel data loader (PH.3.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the props the <HistoryPanel> needs: cached summary + last 5
+ * completed encounters EXCLUDING the current one (we're already in it).
+ * All queries run in parallel.
+ */
+async function loadHistoryPanelData(
+  patientId: string,
+  currentEncounterId: string,
+): Promise<{ summary: HPSummary; encounters: HPEncounterCard[] }> {
+  const [summaryRows, encounterRows, patientRows] = await Promise.all([
+    pool.query<{
+      summary: Record<string, unknown> | null;
+      status: string;
+      computed_at: string | null;
+    }>(
+      `SELECT summary, status, computed_at::text AS computed_at
+         FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
+      [patientId],
+    ),
+    pool.query<{
+      id: string;
+      encounter_date: string;
+      encounter_number: string;
+      chief_complaint_chips: string[] | null;
+      assessment_codes: string[] | null;
+      disposition: string | null;
+    }>(
+      `SELECT e.id,
+              e.encounter_date::text AS encounter_date,
+              e.encounter_number,
+              e.chief_complaint_chips,
+              e.assessment_codes,
+              e.disposition::text AS disposition
+         FROM encounters e
+        WHERE e.patient_id = $1
+          AND e.status = 'completed'
+          AND e.id <> $2
+        ORDER BY e.encounter_date DESC, e.completed_at DESC NULLS LAST
+        LIMIT 5`,
+      [patientId, currentEncounterId],
+    ),
+    pool.query<{ known_allergies: string | null }>(
+      `SELECT known_allergies FROM patients WHERE id = $1 LIMIT 1`,
+      [patientId],
+    ),
+  ]);
+
+  const sRow = summaryRows.rows[0];
+  const sObj = (sRow?.summary ?? {}) as {
+    summary_text?: string;
+    problem_list?: HPProblem[];
+    allergy_aggregation?: { allergen?: string; source?: string }[];
+    red_flags?: { kind?: string; text?: string }[];
+  };
+
+  // Build the allergy list (same merge logic as /patients/[id], compact).
+  const seen = new Set<string>();
+  const allergies: HPAllergy[] = [];
+  const ownerAllergies = patientRows.rows[0]?.known_allergies ?? null;
+  if (ownerAllergies && ownerAllergies !== 'None') {
+    for (const piece of ownerAllergies.split(/[,;]/)) {
+      const a = piece.trim();
+      if (!a) continue;
+      const k = a.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      allergies.push({ allergen: a, source: 'on file', fromOwner: true });
+    }
+  }
+  for (const a of sObj.allergy_aggregation ?? []) {
+    if (!a.allergen) continue;
+    const k = a.allergen.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    allergies.push({ allergen: a.allergen, source: a.source ?? 'AI' });
+  }
+  for (const f of sObj.red_flags ?? []) {
+    if (f.kind !== 'allergy' || !f.text) continue;
+    const k = f.text.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    allergies.push({ allergen: f.text, source: 'AI red flag' });
+  }
+
+  const summary: HPSummary = {
+    status: sRow?.status ?? 'missing',
+    summary_text: sObj.summary_text ?? null,
+    problems: (sObj.problem_list ?? []).slice(0, 4),
+    allergies,
+    computed_at: sRow?.computed_at ?? null,
+  };
+
+  const encounters: HPEncounterCard[] = encounterRows.rows.map((r) => ({
+    id: r.id,
+    encounter_date: r.encounter_date,
+    encounter_number: r.encounter_number,
+    chief_complaint_chips: r.chief_complaint_chips,
+    primary_code: (r.assessment_codes ?? [])[0] ?? null,
+    disposition: r.disposition,
+  }));
+
+  return { summary, encounters };
 }
