@@ -51,14 +51,65 @@ type SummaryRow = {
 // with a missing key doesn't crash the page.
 type ValidatedSummary = {
   summary_text?: string;
-  problem_list?: unknown[];
-  medication_history?: unknown[];
-  allergy_aggregation?: unknown[];
+  problem_list?: ProblemListEntry[];
+  medication_history?: MedicationHistoryEntry[];
+  allergy_aggregation?: AllergyAggregationEntry[];
   cc_chip_rankings?: string[];
   cc_chip_additions?: string[];
   disposition_recommendation?: string;
   disposition_additions?: string[];
   red_flags?: { kind?: string; text?: string; severity?: string }[];
+};
+
+type ProblemListEntry = {
+  label?: string;
+  since?: string | null;
+  status?: string;
+  current_meds?: string[];
+  last_managed_at?: string | null;
+  source_encounters?: string[];
+};
+
+type MedicationHistoryEntry = {
+  generic?: string;
+  active?: boolean;
+  first_prescribed?: string | null;
+  last_prescribed?: string | null;
+  frequency_normal?: string;
+};
+
+type AllergyAggregationEntry = {
+  allergen?: string;
+  source?: string;
+  confidence?: string;
+};
+
+type PrescriptionLineLite = {
+  brand?: string;
+  generic?: string;
+  strength?: string;
+  form?: string;
+  frequency?: string;
+  duration_days?: number | null;
+  duration?: string;
+  timing?: string;
+  instructions?: string;
+};
+
+type EncounterCardRow = {
+  id: string;
+  encounter_number: string;
+  encounter_date: string;
+  status: string;
+  chief_complaint_chips: string[] | null;
+  chief_complaint_text: string | null;
+  assessment_codes: string[] | null;
+  assessment_text: string | null;
+  disposition: string | null;
+  follow_up_days: number | null;
+  referral_target: string | null;
+  prescription_number: string | null;
+  prescription_lines: PrescriptionLineLite[] | null;
 };
 
 function timeAgo(iso: string | null): string {
@@ -87,8 +138,8 @@ export default async function PatientPage({
   const { id } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
 
-  // Load patient + cached summary in parallel.
-  const [patientRows, summaryRows] = await Promise.all([
+  // Load patient + cached summary + encounter timeline in parallel.
+  const [patientRows, summaryRows, encounterRows] = await Promise.all([
     pool.query<Patient>(
       `SELECT id, mrn, name, age_years, sex, phone_e164, known_allergies
          FROM patients WHERE id = $1 LIMIT 1`,
@@ -106,12 +157,34 @@ export default async function PatientPage({
         WHERE patient_id = $1 LIMIT 1`,
       [id],
     ),
+    pool.query<EncounterCardRow>(
+      `SELECT e.id, e.encounter_number,
+              e.encounter_date::text AS encounter_date,
+              e.status::text AS status,
+              e.chief_complaint_chips,
+              e.chief_complaint_text,
+              e.assessment_codes,
+              e.assessment_text,
+              e.disposition::text AS disposition,
+              e.follow_up_days,
+              e.referral_target,
+              p.prescription_number,
+              p.lines AS prescription_lines
+         FROM encounters e
+         LEFT JOIN prescriptions p ON p.encounter_id = e.id
+        WHERE e.patient_id = $1
+          AND e.status = 'completed'
+        ORDER BY e.encounter_date DESC, e.completed_at DESC NULLS LAST
+        LIMIT 20`,
+      [id],
+    ),
   ]);
 
   const patient = patientRows.rows[0];
   if (!patient) notFound();
   const summaryRow = summaryRows.rows[0] ?? null;
   const summary = (summaryRow?.summary ?? null) as ValidatedSummary | null;
+  const encounters = encounterRows.rows;
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
@@ -167,17 +240,21 @@ export default async function PatientPage({
           summaryRow={summaryRow}
         />
 
-        {/* 3-6. Longitudinal sections — PH.2.2 */}
-        <div className="mt-6 rounded-xl border border-dashed border-even-ink-200 bg-white/40 p-5">
-          <p className="text-xs font-medium uppercase tracking-[0.14em] text-even-ink-400">
-            Coming in PH.2.2
-          </p>
-          <p className="mt-2 text-sm text-even-ink-600">
-            Problem list, medication history, allergy strip, and the
-            reverse-chronological encounter timeline ship in the next
-            milestone. The cache is in place — the UI is being filled in.
-          </p>
-        </div>
+        {/* 3. Problem list */}
+        <ProblemListSection problems={summary?.problem_list ?? []} />
+
+        {/* 4. Medication history */}
+        <MedicationHistorySection meds={summary?.medication_history ?? []} />
+
+        {/* 5. Allergy + risk profile strip */}
+        <AllergiesSection
+          ownerAllergies={patient.known_allergies}
+          aggregations={summary?.allergy_aggregation ?? []}
+          redFlags={summary?.red_flags ?? []}
+        />
+
+        {/* 6. Encounter timeline */}
+        <EncounterTimelineSection encounters={encounters} />
       </section>
     </main>
   );
@@ -288,5 +365,442 @@ function StatusPill({ status }: { status: string }) {
     >
       {status}
     </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Problem list
+// ---------------------------------------------------------------------------
+
+function ProblemListSection({ problems }: { problems: ProblemListEntry[] }) {
+  return (
+    <div className="mt-6 rounded-xl border border-even-ink-200 bg-white p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-even-navy">
+            Problem list
+          </h2>
+          <span className="rounded-full border border-even-ink-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-even-ink-500">
+            {problems.length}
+          </span>
+        </div>
+        <span className="text-[10px] uppercase tracking-wider text-even-ink-400">
+          Edit ships in PH.5
+        </span>
+      </div>
+
+      {problems.length === 0 ? (
+        <p className="text-sm text-even-ink-500">
+          No problems on file yet.
+        </p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-even-ink-100 text-left text-[10px] uppercase tracking-wider text-even-ink-500">
+              <th className="py-2 pr-3 font-medium">Problem</th>
+              <th className="py-2 pr-3 font-medium">Status</th>
+              <th className="py-2 pr-3 font-medium">On</th>
+              <th className="py-2 pr-3 font-medium">Last managed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {problems.map((p, i) => (
+              <tr
+                key={`${p.label ?? 'x'}-${i}`}
+                className="border-b border-even-ink-100/50 last:border-b-0"
+              >
+                <td className="py-2 pr-3 align-top">
+                  <div className="flex items-center gap-2">
+                    <span
+                      aria-label="AI-derived"
+                      className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500"
+                    />
+                    <div className="text-sm font-medium text-even-navy">
+                      {p.label ?? '—'}
+                    </div>
+                  </div>
+                  {p.since ? (
+                    <div className="ml-3.5 text-[10px] uppercase tracking-wider text-even-ink-400">
+                      since {p.since}
+                    </div>
+                  ) : null}
+                </td>
+                <td className="py-2 pr-3 align-top">
+                  <ProblemStatusPill status={p.status ?? 'active'} />
+                </td>
+                <td className="py-2 pr-3 align-top text-xs text-even-ink-600">
+                  {(p.current_meds ?? []).join(', ') || (
+                    <span className="text-even-ink-400">—</span>
+                  )}
+                </td>
+                <td className="py-2 pr-3 align-top text-xs text-even-ink-500">
+                  {p.last_managed_at ?? '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function ProblemStatusPill({ status }: { status: string }) {
+  const variants: Record<string, string> = {
+    active: 'border-even-pink-200 bg-even-pink-50 text-even-pink-800',
+    controlled: 'border-even-blue-200 bg-even-blue-50 text-even-blue-800',
+    resolved: 'border-even-ink-200 bg-white text-even-ink-500',
+  };
+  const cls = variants[status] ?? variants.active;
+  return (
+    <span
+      className={`inline-block rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${cls}`}
+    >
+      {status}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Medication history
+// ---------------------------------------------------------------------------
+
+function MedicationHistorySection({
+  meds,
+}: {
+  meds: MedicationHistoryEntry[];
+}) {
+  const sorted = [...meds].sort((a, b) => {
+    const al = a.last_prescribed ?? '';
+    const bl = b.last_prescribed ?? '';
+    return bl.localeCompare(al);
+  });
+
+  return (
+    <div className="mt-6 rounded-xl border border-even-ink-200 bg-white p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-even-navy">
+            Medication history
+          </h2>
+          <span className="rounded-full border border-even-ink-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-even-ink-500">
+            {sorted.length}
+          </span>
+        </div>
+        <span className="text-[10px] uppercase tracking-wider text-even-ink-400">
+          most recent first
+        </span>
+      </div>
+
+      {sorted.length === 0 ? (
+        <p className="text-sm text-even-ink-500">No prescriptions on file.</p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-even-ink-100 text-left text-[10px] uppercase tracking-wider text-even-ink-500">
+              <th className="py-2 pr-3 font-medium">Generic</th>
+              <th className="py-2 pr-3 font-medium">Frequency</th>
+              <th className="py-2 pr-3 font-medium">First</th>
+              <th className="py-2 pr-3 font-medium">Last</th>
+              <th className="py-2 pr-3 font-medium">State</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((m, i) => (
+              <tr
+                key={`${m.generic ?? 'x'}-${i}`}
+                className="border-b border-even-ink-100/50 last:border-b-0"
+              >
+                <td className="py-2 pr-3 align-top">
+                  <div className="flex items-center gap-2">
+                    <span
+                      aria-label="AI-derived"
+                      className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500"
+                    />
+                    <div className="text-sm font-medium text-even-navy">
+                      {m.generic ?? '—'}
+                    </div>
+                  </div>
+                </td>
+                <td className="py-2 pr-3 align-top text-xs text-even-ink-600">
+                  {m.frequency_normal ?? '—'}
+                </td>
+                <td className="py-2 pr-3 align-top text-xs text-even-ink-500">
+                  {m.first_prescribed ?? '—'}
+                </td>
+                <td className="py-2 pr-3 align-top text-xs text-even-ink-500">
+                  {m.last_prescribed ?? '—'}
+                </td>
+                <td className="py-2 pr-3 align-top">
+                  {m.active === false ? (
+                    <span className="inline-block rounded-full border border-even-ink-200 bg-white px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-even-ink-500">
+                      stopped
+                    </span>
+                  ) : (
+                    <span className="inline-block rounded-full border border-even-blue-200 bg-even-blue-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-even-blue-800">
+                      active
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Allergy + risk profile strip
+// ---------------------------------------------------------------------------
+
+function AllergiesSection({
+  ownerAllergies,
+  aggregations,
+  redFlags,
+}: {
+  ownerAllergies: string | null;
+  aggregations: AllergyAggregationEntry[];
+  redFlags: { kind?: string; text?: string; severity?: string }[];
+}) {
+  // Merge: doctor-entered free text (patients.known_allergies) +
+  // AI-aggregated entries + red-flag rows with kind='allergy'.
+  // Dedupe loosely on lowercased allergen string.
+  const seen = new Set<string>();
+  const items: Array<{
+    allergen: string;
+    source: string;
+    confidence?: string;
+    fromOwner?: boolean;
+  }> = [];
+
+  if (ownerAllergies && ownerAllergies.trim() && ownerAllergies !== 'None') {
+    for (const piece of ownerAllergies.split(/[,;]/)) {
+      const a = piece.trim();
+      if (!a) continue;
+      const k = a.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      items.push({
+        allergen: a,
+        source: 'On file (intake)',
+        fromOwner: true,
+      });
+    }
+  }
+
+  for (const a of aggregations) {
+    if (!a.allergen) continue;
+    const k = a.allergen.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    items.push({
+      allergen: a.allergen,
+      source: a.source ?? '—',
+      confidence: a.confidence,
+    });
+  }
+
+  const allergyFlags = redFlags.filter((f) => f.kind === 'allergy' && f.text);
+  for (const f of allergyFlags) {
+    const k = (f.text ?? '').toLowerCase();
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    items.push({
+      allergen: f.text ?? '—',
+      source: 'AI red flag',
+      confidence: f.severity,
+    });
+  }
+
+  const nonAllergyFlags = redFlags.filter(
+    (f) => f.kind !== 'allergy' && f.text,
+  );
+
+  return (
+    <div className="mt-6 rounded-xl border border-even-pink-200 bg-even-pink-50/40 p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-even-pink-900">
+          Allergies & risk
+        </h2>
+        <span className="text-[10px] uppercase tracking-wider text-even-pink-700">
+          flagged for the doctor
+        </span>
+      </div>
+
+      {items.length === 0 && nonAllergyFlags.length === 0 ? (
+        <p className="text-sm text-even-pink-800">
+          No allergies or risk flags recorded.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {items.map((it, i) => (
+            <li
+              key={`a-${i}`}
+              className="flex items-start justify-between gap-3 rounded-md border border-even-pink-200 bg-white px-3 py-2"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  {!it.fromOwner && (
+                    <span
+                      aria-label="AI-derived"
+                      className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500"
+                    />
+                  )}
+                  <span className="text-sm font-medium text-even-pink-900">
+                    {it.allergen}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[10px] uppercase tracking-wider text-even-pink-700">
+                  {it.source}
+                  {it.confidence ? <> · {it.confidence} confidence</> : null}
+                </div>
+              </div>
+            </li>
+          ))}
+          {nonAllergyFlags.map((f, i) => (
+            <li
+              key={`f-${i}`}
+              className="flex items-start justify-between gap-3 rounded-md border border-even-pink-200 bg-white px-3 py-2"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span
+                    aria-label="AI-derived"
+                    className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500"
+                  />
+                  <span className="text-sm font-medium text-even-pink-900">
+                    {f.text}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[10px] uppercase tracking-wider text-even-pink-700">
+                  {f.kind ?? 'flag'}
+                  {f.severity ? <> · {f.severity}</> : null}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Encounter timeline
+// ---------------------------------------------------------------------------
+
+function EncounterTimelineSection({
+  encounters,
+}: {
+  encounters: EncounterCardRow[];
+}) {
+  return (
+    <div className="mt-6 rounded-xl border border-even-ink-200 bg-white p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-even-navy">
+            Encounter timeline
+          </h2>
+          <span className="rounded-full border border-even-ink-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-even-ink-500">
+            {encounters.length}
+          </span>
+        </div>
+        <span className="text-[10px] uppercase tracking-wider text-even-ink-400">
+          newest first
+        </span>
+      </div>
+
+      {encounters.length === 0 ? (
+        <p className="text-sm text-even-ink-500">
+          No completed encounters yet.
+        </p>
+      ) : (
+        <ol className="space-y-3">
+          {encounters.map((e) => (
+            <EncounterCard key={e.id} encounter={e} />
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+function EncounterCard({ encounter: e }: { encounter: EncounterCardRow }) {
+  const rxLines = Array.isArray(e.prescription_lines)
+    ? e.prescription_lines
+    : [];
+  const rxSummary = rxLines
+    .map((l) => {
+      const brand = l.brand ?? l.generic ?? '';
+      const strength = l.strength ?? '';
+      return [brand, strength].filter(Boolean).join(' ');
+    })
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(', ');
+  const moreCount = rxLines.length > 3 ? rxLines.length - 3 : 0;
+  const primaryCode = (e.assessment_codes ?? [])[0] ?? null;
+
+  return (
+    <li className="rounded-lg border border-even-ink-100 bg-white p-4">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium uppercase tracking-wider text-even-ink-500">
+            {e.encounter_date}
+          </span>
+          <span className="font-mono text-[10px] text-even-ink-400">
+            {e.encounter_number}
+          </span>
+        </div>
+        <Link
+          href={`/dashboard/encounters/${e.id}`}
+          className="text-[10px] font-medium uppercase tracking-wider text-even-blue-700 hover:text-even-blue-800 hover:underline"
+        >
+          Open →
+        </Link>
+      </div>
+
+      {(e.chief_complaint_chips?.length ?? 0) > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {(e.chief_complaint_chips ?? []).map((chip) => (
+            <span
+              key={chip}
+              className="inline-block rounded-full border border-even-ink-200 bg-white px-2 py-0.5 text-[10px] text-even-ink-700"
+            >
+              {chip}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {(primaryCode || e.assessment_text) && (
+        <p className="mb-1.5 text-xs text-even-ink-700">
+          {primaryCode ? (
+            <span className="font-mono text-even-blue-700">{primaryCode}</span>
+          ) : null}
+          {primaryCode && e.assessment_text ? ' · ' : ''}
+          {e.assessment_text ?? ''}
+        </p>
+      )}
+
+      {rxSummary && (
+        <p className="mb-1.5 text-xs text-even-ink-600">
+          <span className="font-medium text-even-ink-500">Rx:</span> {rxSummary}
+          {moreCount > 0 ? (
+            <span className="text-even-ink-400"> +{moreCount} more</span>
+          ) : null}
+        </p>
+      )}
+
+      {e.disposition && (
+        <p className="text-[10px] uppercase tracking-wider text-even-ink-500">
+          {e.disposition.replace(/_/g, ' ')}
+          {e.follow_up_days ? <> · in {e.follow_up_days}d</> : null}
+          {e.referral_target ? <> · {e.referral_target}</> : null}
+        </p>
+      )}
+    </li>
   );
 }
