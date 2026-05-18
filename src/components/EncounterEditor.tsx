@@ -25,6 +25,8 @@ import { Icd10Typeahead } from './Icd10Typeahead';
 import { DictateButton } from './DictateButton';
 import { PrescriptionCompose } from './PrescriptionCompose';
 import type { PrescriptionLine } from './DrugRow';
+import { AmbientRecorder } from './AmbientRecorder';
+import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewer';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -96,6 +98,7 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [timerNow, setTimerNow] = useState(() => Date.now());
+  const transcriptRef = useRef<TranscriptViewerHandle | null>(null);
 
   // Timer that updates each second while encounter is active
   useEffect(() => {
@@ -209,15 +212,18 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
 
   return (
     <div className="space-y-8">
-      {/* Timer + recording placeholder + save indicator */}
-      <div className="flex items-center justify-between text-xs text-even-ink-500">
+      {/* Timer + ambient recorder + save indicator */}
+      <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-even-ink-500">
         <div className="flex items-center gap-4">
           <span className="font-mono text-sm tabular-nums text-even-navy">
             ⏱ {readOnly ? '—' : elapsed}
           </span>
-          <span className="text-even-ink-400">
-            Ambient recording · Sprint 5
-          </span>
+          {!readOnly && (
+            <AmbientRecorder
+              encounterId={initial.id}
+              onSnippetSaved={() => transcriptRef.current?.refresh()}
+            />
+          )}
         </div>
         <span className={`text-[11px] tabular-nums ${saveTone}`}>{saveLabel}</span>
       </div>
@@ -446,6 +452,8 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
           </div>
         )}
       </Section>
+
+      <TranscriptViewer ref={transcriptRef} encounterId={initial.id} />
 
       {!readOnly && (
         <div className="sticky bottom-0 -mx-6 border-t border-even-ink-100 bg-white/95 px-6 py-4 backdrop-blur">
