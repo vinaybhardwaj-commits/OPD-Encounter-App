@@ -13,6 +13,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
 import { pool } from '@/lib/db';
+import { notifyRoom } from '@/lib/queueNotify';
 
 async function requireSession(): Promise<void> {
   const session = await getCurrentUser();
@@ -23,14 +24,16 @@ export async function actionMarkDiagnosticReady(formData: FormData) {
   await requireSession();
   const encounterId = String(formData.get('encounter_id') ?? '');
   if (!encounterId) return;
-  await pool.query(
+  const { rows } = await pool.query<{ room_id: string | null }>(
     `UPDATE encounters
         SET status = 'ready_to_resume',
             updated_at = NOW()
       WHERE id = $1
-        AND status = 'paused_diagnostics'`,
+        AND status = 'paused_diagnostics'
+      RETURNING room_id`,
     [encounterId],
   );
+  await notifyRoom(rows[0]?.room_id ?? null, `lab_ready:${encounterId}`);
   revalidatePath('/reception');
   // Also notify the doctor's dashboard if they're looking at it
   revalidatePath('/dashboard');
@@ -132,6 +135,7 @@ export async function actionRegisterPatient(formData: FormData) {
     [encNumber, patientId, doctorId, roomId, visitReason, patientMrn, cceId],
   );
 
+  await notifyRoom(roomId, `registered:${encNumber}`);
   revalidatePath('/reception');
   revalidatePath('/triage');
   revalidatePath('/dashboard');

@@ -17,6 +17,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
 import { pool } from '@/lib/db';
+import { QueueLive } from '@/components/QueueLive';
 import { actionStartTriage } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -96,6 +97,7 @@ export default async function TriagePage({
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
+      <QueueLive channel="queue:global" />
       <header className="border-b border-even-ink-100 bg-white">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-6 px-6 py-3">
           <div className="flex items-center gap-3">

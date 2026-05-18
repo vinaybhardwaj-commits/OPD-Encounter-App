@@ -14,6 +14,7 @@
 import { NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
+import { notifyRoom } from '@/lib/queueNotify';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,12 +61,14 @@ export async function POST(
     );
   }
 
-  await pool.query(
+  const { rows: upd } = await pool.query<{ room_id: string | null }>(
     `UPDATE encounters
      SET status = 'completed', completed_at = NOW(), updated_at = NOW()
-     WHERE id = $1`,
+     WHERE id = $1
+     RETURNING room_id`,
     [id],
   );
+  await notifyRoom(upd[0]?.room_id ?? null, `completed:${id}`);
 
   return NextResponse.json({ ok: true, encounter_id: id });
 }

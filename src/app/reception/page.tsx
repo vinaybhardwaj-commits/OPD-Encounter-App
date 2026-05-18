@@ -19,6 +19,7 @@ import { getCurrentUser } from '@/lib/auth';
 import { pool } from '@/lib/db';
 import { PatientSearch } from '@/components/PatientSearch';
 import { RegisterPatientModal } from '@/components/RegisterPatientModal';
+import { QueueLive } from '@/components/QueueLive';
 import { actionMarkDiagnosticReady } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -178,6 +179,7 @@ export default async function ReceptionPage() {
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
+      <QueueLive channel="queue:global" />
       <header className="border-b border-even-ink-100 bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-6 px-6 py-3">
           <div className="flex shrink-0 items-center gap-3">

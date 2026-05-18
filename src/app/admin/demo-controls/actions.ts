@@ -12,6 +12,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { getCurrentDoctor } from '@/lib/auth';
 import { pool } from '@/lib/db';
+import { notifyRoom } from '@/lib/queueNotify';
 import { recomputePatientSummary } from '@/lib/patient-summary';
 import {
   resetTodaysEncounters,
@@ -35,12 +36,15 @@ function bust() {
 export async function actionReset() {
   const email = await requireSession();
   await resetTodaysEncounters(email);
+  // Broad bus: every watcher refreshes since the entire day was reset.
+  await notifyRoom(null, `demo_reset`);
   bust();
 }
 
 export async function actionAddWalkIn() {
   await requireSession();
   await addWalkInPatient();
+  await notifyRoom(null, `demo_walk_in`);
   bust();
 }
 
@@ -49,6 +53,13 @@ export async function actionMarkReady(formData: FormData) {
   const encId = String(formData.get('encounter_id') ?? '');
   if (!encId) return;
   await markDiagnosticReady(encId, email);
+  // Look up room for the targeted notify (markDiagnosticReady doesn't
+  // return it). One-shot pg_notify, swallows on failure.
+  const { rows } = await pool.query<{ room_id: string | null }>(
+    `SELECT room_id FROM encounters WHERE id = $1 LIMIT 1`,
+    [encId],
+  );
+  await notifyRoom(rows[0]?.room_id ?? null, `lab_ready:${encId}`);
   bust();
 }
 

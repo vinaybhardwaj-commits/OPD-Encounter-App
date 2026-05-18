@@ -18,6 +18,7 @@
 import { NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
+import { notifyRoom } from '@/lib/queueNotify';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,9 +61,12 @@ export async function POST(
   }
 
   // ready_to_resume → active
-  await pool.query(
-    `UPDATE encounters SET status = 'active', updated_at = NOW() WHERE id = $1`,
+  const { rows: upd } = await pool.query<{ room_id: string | null }>(
+    `UPDATE encounters SET status = 'active', updated_at = NOW()
+     WHERE id = $1
+     RETURNING room_id`,
     [id],
   );
+  await notifyRoom(upd[0]?.room_id ?? null, `resumed:${id}`);
   return NextResponse.json({ ok: true, status: 'active' });
 }

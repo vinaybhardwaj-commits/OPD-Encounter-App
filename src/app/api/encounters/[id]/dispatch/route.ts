@@ -25,6 +25,7 @@ import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
 import { generatePrescriptionPdf } from '@/lib/pdf';
 import { sendWhatsAppPdf } from '@/lib/twilio';
+import { notifyRoom } from '@/lib/queueNotify';
 import type { PrescriptionLine } from '@/components/DrugRow';
 
 export const runtime = 'nodejs';
@@ -38,6 +39,7 @@ const PHARMACY_WHATSAPP = process.env.EHRC_PHARMACY_WHATSAPP ?? '+919999999999';
 type EncounterRow = {
   id: string;
   status: string;
+  room_id: string | null;
   encounter_number: string;
   encounter_date: string;
   chief_complaint_chips: string[] | null;
@@ -79,7 +81,7 @@ export async function POST(
 
   // Load everything we need in one round trip
   const { rows: encRows } = await pool.query<EncounterRow>(
-    `SELECT e.id, e.status::text AS status, e.encounter_number,
+    `SELECT e.id, e.status::text AS status, e.room_id, e.encounter_number,
             e.encounter_date::text AS encounter_date,
             e.chief_complaint_chips, e.chief_complaint_text,
             e.exam_findings, e.vitals,
@@ -134,6 +136,7 @@ export async function POST(
 
   // Idempotency — return cached if already fully dispatched
   if (rx.pdf_blob_url && rx.patient_sent_at && rx.pharmacy_sent_at) {
+    await notifyRoom(enc.room_id ?? null, `dispatched:${id}`);
     return NextResponse.json({
       ok: true,
       already_dispatched: true,
@@ -247,6 +250,8 @@ export async function POST(
      WHERE id = $1`,
     [rx.id, pdfUrl, patientSentAt, pharmacySentAt],
   );
+
+  await notifyRoom(enc.room_id ?? null, `dispatched:${id}`);
 
   return NextResponse.json({
     ok: true,

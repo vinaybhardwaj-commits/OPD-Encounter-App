@@ -18,6 +18,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
 import { pool } from '@/lib/db';
+import { notifyRoom } from '@/lib/queueNotify';
 
 async function requireSessionId(): Promise<string | null> {
   const session = await getCurrentUser();
@@ -33,14 +34,16 @@ export async function actionStartTriage(formData: FormData) {
   await requireSessionId();
   const encId = String(formData.get('encounter_id') ?? '');
   if (!encId) return;
-  await pool.query(
+  const { rows } = await pool.query<{ room_id: string | null }>(
     `UPDATE encounters
         SET status = 'at_triage'::encounter_status,
             updated_at = NOW()
       WHERE id = $1
-        AND status IN ('registered','at_triage')`,
+        AND status IN ('registered','at_triage')
+      RETURNING room_id`,
     [encId],
   );
+  await notifyRoom(rows[0]?.room_id ?? null, `at_triage:${encId}`);
   revalidatePath('/triage');
   revalidatePath('/reception');
   redirect(`/triage/${encId}`);
@@ -84,7 +87,7 @@ export async function actionSaveVitals(formData: FormData) {
 
   const refinedCC = String(formData.get('chief_complaint_text') ?? '').trim() || null;
 
-  await pool.query(
+  const { rows } = await pool.query<{ room_id: string | null }>(
     `UPDATE encounters
         SET vitals = $2::jsonb,
             triage_nurse_id = $3,
@@ -93,10 +96,12 @@ export async function actionSaveVitals(formData: FormData) {
             status = 'waiting_for_doctor'::encounter_status,
             updated_at = NOW()
       WHERE id = $1
-        AND status IN ('registered','at_triage')`,
+        AND status IN ('registered','at_triage')
+      RETURNING room_id`,
     [encId, JSON.stringify(cleanVitals), nurseId, refinedCC],
   );
 
+  await notifyRoom(rows[0]?.room_id ?? null, `vitals_saved:${encId}`);
   revalidatePath('/triage');
   revalidatePath('/reception');
   revalidatePath('/dashboard');

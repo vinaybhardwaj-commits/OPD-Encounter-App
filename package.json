@@ -13,13 +13,15 @@
     "@vercel/postgres": "0.10.0",
     "jose": "5.9.6",
     "next": "15.5.18",
+    "pdf-lib": "1.17.1",
+    "pg": "^8.13.1",
     "react": "19.0.0",
     "react-dom": "19.0.0",
-    "resend": "4.0.1",
-    "pdf-lib": "1.17.1"
+    "resend": "4.0.1"
   },
   "devDependencies": {
     "@types/node": "22.10.7",
+    "@types/pg": "^8.11.10",
     "@types/react": "19.0.7",
     "@types/react-dom": "19.0.3",
     "autoprefixer": "10.4.20",

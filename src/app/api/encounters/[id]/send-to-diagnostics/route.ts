@@ -22,6 +22,7 @@
 import { NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
+import { notifyRoom } from '@/lib/queueNotify';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -78,15 +79,17 @@ export async function POST(
     ? `diagnostics: ${notes.slice(0, 240)}`
     : 'diagnostics';
 
-  await pool.query(
+  const { rows: upd } = await pool.query<{ room_id: string | null }>(
     `UPDATE encounters
      SET status = 'paused_diagnostics',
          paused_reason = $2,
          pending_diagnostic_test = $3,
          updated_at = NOW()
-     WHERE id = $1`,
+     WHERE id = $1
+     RETURNING room_id`,
     [id, paused_reason, test],
   );
+  await notifyRoom(upd[0]?.room_id ?? null, `sent_to_diagnostics:${id}`);
 
   return NextResponse.json({
     ok: true,

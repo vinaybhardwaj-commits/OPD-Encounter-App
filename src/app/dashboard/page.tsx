@@ -18,6 +18,7 @@ import { getCurrentDoctor } from '@/lib/auth';
 import { getQueueForDoctor, type QueueCard } from '@/lib/queue';
 import { startEncounter } from './actions';
 import { PatientSearch } from '@/components/PatientSearch';
+import { QueueLive } from '@/components/QueueLive';
 
 export const dynamic = 'force-dynamic';
 
@@ -60,6 +61,7 @@ export default async function DashboardPage() {
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
+      <QueueLive channel="queue:global" />
       <header className="border-b border-even-ink-100 bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
           <div className="flex items-center gap-3">
