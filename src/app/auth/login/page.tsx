@@ -120,6 +120,27 @@ function LoginForm() {
           </form>
         )}
 
+        {/* Demo bypass — disappears when DEMO_MODE=false on Vercel */}
+        {!sent && (
+          <div className="mt-6 border-t border-even-ink-100 pt-5">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-even-ink-400">
+              Demo
+            </p>
+            <form action="/api/auth/demo-signin" method="POST">
+              <button
+                type="submit"
+                className="w-full rounded-lg border border-even-pink-200 bg-even-pink-50 px-4 py-2 text-sm font-semibold text-even-pink-800 transition hover:bg-even-pink-100"
+              >
+                Skip — sign in as Dr. Vinay
+              </button>
+            </form>
+            <p className="mt-2 text-[10px] text-even-ink-400">
+              One-click demo. Real pilot doctors will use the magic link
+              once <span className="font-mono">notifications.even.in</span> DNS is verified.
+            </p>
+          </div>
+        )}
+
         <p className="mt-8 text-xs text-even-ink-400">
           OPD Encounter App · Sprint 0 · M0.4
         </p>
