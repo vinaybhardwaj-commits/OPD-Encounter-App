@@ -26,7 +26,7 @@ export async function GET(req: Request) {
   }
 
   // Re-check allowlist in case it changed between request and callback.
-  if (!isAllowedEmail(verified.email)) {
+  if (!(await isAllowedEmail(verified.email))) {
     return NextResponse.redirect(`${origin}/auth/login?error=not_authorized`);
   }
 

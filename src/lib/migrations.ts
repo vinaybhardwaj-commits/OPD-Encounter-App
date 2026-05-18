@@ -172,6 +172,111 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    name: 'seed_doctor_v',
+    sql: `
+      -- Seed V into the doctors table so the magic-link allowlist can move
+      -- from env-var to a real DB row. Idempotent — re-running the
+      -- migration won't duplicate.
+      INSERT INTO doctors (email, name, mci_registration_number)
+      VALUES ('vinay.bhardwaj@even.in', 'Dr. Vinay Bhardwaj', 'DEMO-MCI-001')
+      ON CONFLICT (email) DO NOTHING;
+    `,
+  },
+  {
+    version: 3,
+    name: 'seed_patients_and_today_encounters',
+    sql: `
+      -- 25 patients (Bangalore-area realistic name mix) + today's queue.
+      -- Distribution: 8 waiting (no encounter row), 3 paused_diagnostics,
+      -- 2 ready_to_resume, 12 completed = 17 encounter rows today.
+      --
+      -- Patient phone numbers are clearly fake (+91 9876543201..225) so
+      -- nothing tries to dial them from the demo.
+
+      INSERT INTO patients (mrn, name, age_years, sex, phone_e164, known_allergies) VALUES
+        ('EHRC-2026-001', 'Priya Ramesh',       28, 'F', '+919876543201', NULL),
+        ('EHRC-2026-002', 'Rajesh Kumar',       45, 'M', '+919876543202', 'Penicillin'),
+        ('EHRC-2026-003', 'Lakshmi Iyer',       62, 'F', '+919876543203', NULL),
+        ('EHRC-2026-004', 'Karthik Subramanian',35, 'M', '+919876543204', NULL),
+        ('EHRC-2026-005', 'Anita Sharma',       38, 'F', '+919876543205', 'Sulfa drugs'),
+        ('EHRC-2026-006', 'Vikram Singh',       52, 'M', '+919876543206', NULL),
+        ('EHRC-2026-007', 'Meera Pillai',       29, 'F', '+919876543207', NULL),
+        ('EHRC-2026-008', 'Suresh Reddy',       58, 'M', '+919876543208', 'Aspirin'),
+        ('EHRC-2026-009', 'Deepika Nair',       31, 'F', '+919876543209', NULL),
+        ('EHRC-2026-010', 'Arjun Murthy',       42, 'M', '+919876543210', NULL),
+        ('EHRC-2026-011', 'Sunita Krishnan',    49, 'F', '+919876543211', NULL),
+        ('EHRC-2026-012', 'Mohan Rao',          66, 'M', '+919876543212', 'Iodine contrast'),
+        ('EHRC-2026-013', 'Kavya Bhat',         24, 'F', '+919876543213', NULL),
+        ('EHRC-2026-014', 'Rohan Mehta',        37, 'M', '+919876543214', NULL),
+        ('EHRC-2026-015', 'Geetha Prasad',      55, 'F', '+919876543215', NULL),
+        ('EHRC-2026-016', 'Naveen Gowda',       33, 'M', '+919876543216', NULL),
+        ('EHRC-2026-017', 'Aishwarya Rao',      27, 'F', '+919876543217', NULL),
+        ('EHRC-2026-018', 'Prakash Hegde',      61, 'M', '+919876543218', NULL),
+        ('EHRC-2026-019', 'Divya Joshi',        40, 'F', '+919876543219', NULL),
+        ('EHRC-2026-020', 'Sandeep Patel',      44, 'M', '+919876543220', NULL),
+        ('EHRC-2026-021', 'Shobha Kumari',      34, 'F', '+919876543221', NULL),
+        ('EHRC-2026-022', 'Ravi Shankar',       53, 'M', '+919876543222', NULL),
+        ('EHRC-2026-023', 'Pooja Shenoy',       32, 'F', '+919876543223', NULL),
+        ('EHRC-2026-024', 'Manoj Verma',        47, 'M', '+919876543224', NULL),
+        ('EHRC-2026-025', 'Asha Pai',           26, 'F', '+919876543225', NULL)
+      ON CONFLICT (mrn) DO NOTHING;
+
+      -- 12 completed today, 3 paused for diagnostics, 2 ready_to_resume.
+      -- 8 patients (EHRC-2026-018..025) are intentionally left without
+      -- encounters so they show as "Waiting" in the queue.
+
+      INSERT INTO encounters (
+        encounter_number, patient_id, doctor_id, encounter_date,
+        status, started_at, completed_at, paused_reason, pending_diagnostic_test,
+        chief_complaint_text, exam_findings, assessment_text,
+        disposition, follow_up_days
+      )
+      SELECT
+        v.enc_no,
+        p.id,
+        d.id,
+        CURRENT_DATE,
+        v.status::encounter_status,
+        v.started_at,
+        v.completed_at,
+        v.paused_reason,
+        v.pending_diagnostic_test,
+        v.cc,
+        v.exam,
+        v.assessment,
+        NULLIF(v.disposition, '')::disposition_kind,
+        v.follow_up_days
+      FROM (VALUES
+        -- COMPLETED (12)
+        ('ENC-20260518-001', 'EHRC-2026-001', 'completed'::text, NOW() - INTERVAL '3h 30m', NOW() - INTERVAL '3h 18m', NULL::text, NULL::text, 'Sore throat 3 days, low-grade fever',                'Mildly inflamed pharynx, no exudate, afebrile on exam',           'Acute pharyngitis, likely viral',                          'discharge'::text, NULL::int),
+        ('ENC-20260518-002', 'EHRC-2026-002', 'completed', NOW() - INTERVAL '3h 15m', NOW() - INTERVAL '2h 50m', NULL, NULL, 'Hypertension follow-up, BP 148/92 home readings',           'BP 144/88 in clinic, HR 76 regular, no edema',                    'Essential HTN — sub-optimal control on current regimen',   'follow_up',     14),
+        ('ENC-20260518-003', 'EHRC-2026-003', 'completed', NOW() - INTERVAL '2h 55m', NOW() - INTERVAL '2h 38m', NULL, NULL, 'Knee pain x 2 weeks, worse on stairs',                       'Crepitus right knee, no effusion, ROM 0-110 painful at extreme',  'Right knee osteoarthritis',                                'refer',         NULL),
+        ('ENC-20260518-004', 'EHRC-2026-004', 'completed', NOW() - INTERVAL '2h 40m', NOW() - INTERVAL '2h 28m', NULL, NULL, 'Annual check-up, no complaints',                             'Unremarkable. BP 122/78, BMI 24.6.',                              'Healthy adult, due for routine bloods',                    'discharge',     NULL),
+        ('ENC-20260518-005', 'EHRC-2026-005', 'completed', NOW() - INTERVAL '2h 25m', NOW() - INTERVAL '2h 10m', NULL, NULL, 'Migraine recurrence, 2nd episode this month',                'Neuro grossly intact, no focal deficit, no nuchal rigidity',      'Migraine without aura',                                    'follow_up',     30),
+        ('ENC-20260518-006', 'EHRC-2026-006', 'completed', NOW() - INTERVAL '2h 10m', NOW() - INTERVAL '1h 55m', NULL, NULL, 'Type 2 DM review, fasting BSL 162',                          'Feet exam normal, no ulcers, dorsalis pedis pulses palpable',     'T2DM — fair control, HbA1c due',                           'follow_up',     30),
+        ('ENC-20260518-007', 'EHRC-2026-007', 'completed', NOW() - INTERVAL '1h 55m', NOW() - INTERVAL '1h 40m', NULL, NULL, 'Acid reflux, worse at night',                                'Soft non-tender abdomen, no organomegaly',                        'GERD',                                                     'discharge',     NULL),
+        ('ENC-20260518-008', 'EHRC-2026-008', 'completed', NOW() - INTERVAL '1h 40m', NOW() - INTERVAL '1h 22m', NULL, NULL, 'Chest discomfort on exertion, x 5 days',                     'BP 152/90, HR 88, S1S2 normal, no murmur, lungs clear',           'Suspected stable angina — for cardiology referral',        'refer',         NULL),
+        ('ENC-20260518-009', 'EHRC-2026-009', 'completed', NOW() - INTERVAL '1h 25m', NOW() - INTERVAL '1h 12m', NULL, NULL, 'UTI symptoms x 2 days',                                       'No costovertebral angle tenderness, suprapubic mild',             'Uncomplicated lower UTI',                                  'discharge',     NULL),
+        ('ENC-20260518-010', 'EHRC-2026-010', 'completed', NOW() - INTERVAL '1h 10m', NOW() - INTERVAL '58m',    NULL, NULL, 'Back pain after lifting, x 4 days',                          'Para-spinal muscle tenderness L4-L5, SLR negative bilaterally',   'Mechanical low back pain',                                 'discharge',     NULL),
+        ('ENC-20260518-011', 'EHRC-2026-011', 'completed', NOW() - INTERVAL '55m',    NOW() - INTERVAL '42m',    NULL, NULL, 'Allergic rhinitis flare, sneezing + post-nasal drip',         'Nasal mucosa pale and boggy, no sinus tenderness',                'Allergic rhinitis',                                        'discharge',     NULL),
+        ('ENC-20260518-012', 'EHRC-2026-012', 'completed', NOW() - INTERVAL '40m',    NOW() - INTERVAL '28m',    NULL, NULL, 'Routine BP + diabetes review',                                'BP 138/82, weight stable, no edema',                              'HTN + T2DM, both well-controlled',                         'follow_up',     90),
+
+        -- PAUSED for diagnostics (3) — disposition empty, completed_at NULL
+        ('ENC-20260518-013', 'EHRC-2026-013', 'paused_diagnostics'::text, NOW() - INTERVAL '35m', NULL, 'diagnostics'::text, 'Chest x-ray'::text,         'Cough + low-grade fever x 6 days',                'Right lower zone crackles, RR 22, SpO2 97%',                'Suspected pneumonia — awaiting CXR',                       ''::text, NULL::int),
+        ('ENC-20260518-014', 'EHRC-2026-014', 'paused_diagnostics',       NOW() - INTERVAL '28m', NULL, 'diagnostics',       'ECG',                       'Palpitations + occasional dizziness, x 2 weeks',  'BP 130/82, HR 92 irregular, no S3/S4',                       'R/o arrhythmia — awaiting ECG',                            '',       NULL),
+        ('ENC-20260518-015', 'EHRC-2026-015', 'paused_diagnostics',       NOW() - INTERVAL '20m', NULL, 'diagnostics',       'USG abdomen',               'RUQ pain + nausea, fatty food intolerance, x 1mo','Mild RUQ tenderness, no rebound, Murphy negative',           'R/o cholelithiasis — awaiting USG',                        '',       NULL),
+
+        -- READY TO RESUME (2) — same shape as paused but the test is back
+        ('ENC-20260518-016', 'EHRC-2026-016', 'ready_to_resume'::text, NOW() - INTERVAL '1h 5m', NULL, 'diagnostics'::text, 'CBC + CRP'::text,   'Fever x 4 days, no localising symptoms', 'Looks well, no rash, no neck stiffness, BP 118/74',  'Pyrexia of unknown origin — workup pending', '', NULL),
+        ('ENC-20260518-017', 'EHRC-2026-017', 'ready_to_resume',       NOW() - INTERVAL '50m',   NULL, 'diagnostics',       'Urine routine',     'Burning micturition x 3 days',           'Suprapubic tenderness, no flank tenderness',          'R/o UTI — urine sent',                        '', NULL)
+      ) v(enc_no, mrn, status, started_at, completed_at, paused_reason, pending_diagnostic_test, cc, exam, assessment, disposition, follow_up_days)
+      JOIN patients p ON p.mrn = v.mrn
+      JOIN doctors d ON d.email = 'vinay.bhardwaj@even.in'
+      ON CONFLICT (encounter_number) DO NOTHING;
+    `,
+  },
 ];
 
 /**

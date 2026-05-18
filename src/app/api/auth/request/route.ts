@@ -37,7 +37,7 @@ export async function POST(req: Request) {
   }
 
   // Allowlist gate. Return 200-style generic response either way.
-  if (!isAllowedEmail(email)) {
+  if (!(await isAllowedEmail(email))) {
     // No email sent; user sees the same UI as a real send.
     return NextResponse.json({ ok: true, sent: true });
   }

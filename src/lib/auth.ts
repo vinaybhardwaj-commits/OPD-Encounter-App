@@ -113,10 +113,32 @@ export async function getCurrentDoctor(): Promise<SessionClaims | null> {
 
 // -------- allowlist --------
 
-export function isAllowedEmail(email: string): boolean {
-  const list = (process.env.ALLOWED_DOCTOR_EMAILS || '')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  return list.includes(email.trim().toLowerCase());
+import { pool } from '@/lib/db';
+
+/**
+ * A doctor is allowed to sign in iff their email is present in the
+ * `doctors` table.
+ *
+ * Previously M0.4 used a comma-separated env-var ALLOWED_DOCTOR_EMAILS as
+ * a stopgap until the doctors table existed. M2.1 seeded that table and
+ * cut the dependency. The env var is left set on Vercel for now but is
+ * no longer read.
+ *
+ * Falls back to false on any DB error (fail-closed) — better to lock out
+ * a request than open the door if Postgres blips. The magic-link request
+ * route already returns a generic "check your email" for both true and
+ * false outcomes, so a false negative degrades quietly.
+ */
+export async function isAllowedEmail(email: string): Promise<boolean> {
+  const e = email.trim().toLowerCase();
+  if (!e) return false;
+  try {
+    const { rows } = await pool.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM doctors WHERE lower(email) = $1',
+      [e],
+    );
+    return parseInt(rows[0]?.count ?? '0', 10) > 0;
+  } catch {
+    return false;
+  }
 }
