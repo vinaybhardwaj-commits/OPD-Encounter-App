@@ -34,6 +34,10 @@ type Row = EncounterEditable & {
   chief_complaint_chips: string[] | null;
   assessment_codes: string[] | null;
   disposition_label_override: string | null;
+  // v2.0.5 triage attribution
+  intake_visit_reason: string | null;
+  triage_completed_at: string | null;
+  triage_nurse_name: string | null;
 };
 
 export default async function EncounterPage({
@@ -59,6 +63,9 @@ export default async function EncounterPage({
        e.chief_complaint_text,
        e.exam_findings,
        e.vitals,
+       e.intake_visit_reason,
+       e.triage_completed_at::text AS triage_completed_at,
+       tn.name AS triage_nurse_name,
        e.assessment_codes,
        e.assessment_text,
        e.disposition::text AS disposition,
@@ -74,6 +81,7 @@ export default async function EncounterPage({
      FROM encounters e
      JOIN patients p ON p.id = e.patient_id
      JOIN doctors d ON d.id = e.doctor_id
+     LEFT JOIN doctors tn ON tn.id = e.triage_nurse_id
      WHERE e.id = $1 AND lower(d.email) = $2
      LIMIT 1`,
     [id, session.email.toLowerCase()],
@@ -157,6 +165,27 @@ export default async function EncounterPage({
             <p className="mt-3 inline-flex items-center gap-1 rounded-md bg-even-pink-100 px-2 py-1 text-xs font-medium text-even-pink-800">
               ⚠ Allergies: {row.patient_allergies}
             </p>
+          )}
+
+          {/* v2.0.5 — CCE intake reason + triage attribution */}
+          {(row.intake_visit_reason || row.triage_completed_at) && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {row.intake_visit_reason && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-even-blue-200 bg-even-blue-50 px-2.5 py-1 text-xs font-medium text-even-blue-800">
+                  Reason: {row.intake_visit_reason}
+                </span>
+              )}
+              {row.triage_completed_at && row.triage_nurse_name && (
+                <span className="text-[11px] text-even-ink-500">
+                  Vitals captured by{' '}
+                  <span className="font-medium text-even-navy">
+                    {row.triage_nurse_name.replace(/^Nurse\s+/i, 'Nurse ')}
+                  </span>
+                  {' · '}
+                  {triageAgo(row.triage_completed_at)}
+                </span>
+              )}
+            </div>
           )}
 
           {row.status === 'completed' && prescriptionMeta && (
@@ -356,4 +385,14 @@ async function loadHistoryPanelData(
   };
 
   return { summary, encounters, ai };
+}
+
+function triageAgo(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return 'just now';
+  const m = Math.max(0, Math.floor((Date.now() - t) / 60000));
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ago`;
 }

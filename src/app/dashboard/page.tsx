@@ -129,8 +129,8 @@ export default async function DashboardPage() {
         )}
 
         <Lane
-          title="Waiting"
-          subtitle="Hasn't been seen yet today. Tap a card to start the encounter."
+          title="Vitals captured · ready for you"
+          subtitle="Triage is done. Tap a card to open the encounter."
           tone="waiting"
           cards={q.waiting}
           startAction={startEncounter}
@@ -282,6 +282,19 @@ function CardBody({ card, tone }: { card: QueueCard; tone: 'ready' | 'waiting' |
       <div className="mt-1 text-[11px] text-even-ink-500 font-mono">
         {card.mrn}
       </div>
+
+      {/* v2.0.5 — intake reason chip from CCE */}
+      {card.intake_visit_reason && (tone === 'waiting' || tone === 'ready') && (
+        <p className="mt-2 inline-block rounded-full border border-even-blue-200 bg-even-blue-50 px-2 py-0.5 text-[10px] font-medium text-even-blue-800">
+          {card.intake_visit_reason}
+        </p>
+      )}
+
+      {/* v2.0.5 — vitals tile (only when triage has captured them) */}
+      {tone === 'waiting' && card.vitals && hasVitals(card.vitals) && (
+        <VitalsTile vitals={card.vitals} triageNurseName={card.triage_nurse_name} />
+      )}
+
       {card.chief_complaint_text && (
         <p className="mt-2 line-clamp-2 text-xs text-even-ink-600">
           {card.chief_complaint_text}
@@ -303,6 +316,82 @@ function CardBody({ card, tone }: { card: QueueCard; tone: 'ready' | 'waiting' |
           {card.encounter_number}
         </p>
       )}
+    </div>
+  );
+}
+
+function hasVitals(v: NonNullable<QueueCard['vitals']>): boolean {
+  return v.bp_sys != null || v.hr != null || v.temp_c != null || v.spo2 != null;
+}
+
+function VitalsTile({
+  vitals: v,
+  triageNurseName,
+}: {
+  vitals: NonNullable<QueueCard['vitals']>;
+  triageNurseName: string | null;
+}) {
+  // Red-zone flags (mirror /triage VitalsForm thresholds)
+  const flagBp =
+    (v.bp_sys != null && v.bp_sys >= 180) ||
+    (v.bp_dia != null && v.bp_dia >= 110);
+  const flagHr = v.hr != null && (v.hr < 50 || v.hr > 110);
+  const flagTemp = v.temp_c != null && v.temp_c > 38.5;
+  const flagSpo2 = v.spo2 != null && v.spo2 < 92;
+  const anyRedZone = flagBp || flagHr || flagTemp || flagSpo2;
+
+  return (
+    <div
+      className={`mt-2 grid grid-cols-4 gap-1.5 rounded-md border px-2 py-1.5 text-[10px] ${
+        anyRedZone
+          ? 'border-even-pink-300 bg-even-pink-50'
+          : 'border-even-ink-100 bg-even-ink-50/50'
+      }`}
+    >
+      <VitalCell
+        label="BP"
+        value={v.bp_sys != null && v.bp_dia != null ? `${v.bp_sys}/${v.bp_dia}` : '—'}
+        flag={flagBp}
+      />
+      <VitalCell label="HR" value={v.hr != null ? String(v.hr) : '—'} flag={flagHr} />
+      <VitalCell
+        label="Temp"
+        value={v.temp_c != null ? `${v.temp_c}°` : '—'}
+        flag={flagTemp}
+      />
+      <VitalCell
+        label="SpO₂"
+        value={v.spo2 != null ? `${v.spo2}%` : '—'}
+        flag={flagSpo2}
+      />
+      {triageNurseName && (
+        <p className="col-span-4 mt-0.5 truncate text-[9px] uppercase tracking-wider text-even-ink-400">
+          {triageNurseName.replace(/^Nurse\s+/i, 'Nurse ')} · triage done
+        </p>
+      )}
+    </div>
+  );
+}
+
+function VitalCell({
+  label,
+  value,
+  flag,
+}: {
+  label: string;
+  value: string;
+  flag: boolean;
+}) {
+  return (
+    <div>
+      <p className="text-[8px] uppercase tracking-wider text-even-ink-500">{label}</p>
+      <p
+        className={`text-[11px] font-semibold tabular-nums ${
+          flag ? 'text-even-pink-800' : 'text-even-navy'
+        }`}
+      >
+        {value}
+      </p>
     </div>
   );
 }
