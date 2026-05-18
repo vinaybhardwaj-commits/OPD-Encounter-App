@@ -44,8 +44,11 @@ export async function middleware(req: NextRequest) {
   return NextResponse.next();
 }
 
-// Protect /dashboard and everything under it. /auth/* and /api/auth/* stay
-// public so the magic-link flow can resolve.
+// Protect /dashboard and /admin (and everything under them). /auth/* and
+// /api/auth/* stay public so the magic-link flow can resolve. /admin is
+// gated the same way as /dashboard for the demo — any signed-in doctor
+// can hit the demo-controls panel. Production will introduce an admin
+// role check.
 export const config = {
-  matcher: ['/dashboard/:path*'],
+  matcher: ['/dashboard/:path*', '/admin/:path*'],
 };

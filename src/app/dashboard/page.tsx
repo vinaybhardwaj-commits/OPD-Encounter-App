@@ -77,6 +77,13 @@ export default async function DashboardPage() {
             >
               Drug search
             </Link>
+            <Link
+              href="/admin/demo-controls"
+              className="text-xs font-medium uppercase tracking-wider text-even-ink-400 hover:text-even-pink-700"
+              title="Demo controls (admin)"
+            >
+              Demo
+            </Link>
             <form action="/api/auth/logout" method="POST">
               <button
                 type="submit"
