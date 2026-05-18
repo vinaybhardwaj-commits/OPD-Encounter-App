@@ -1,10 +1,11 @@
 /**
  * /dashboard — first authenticated landing for a signed-in doctor.
  *
- * M0.4: placeholder. The queue, encounter list, and active encounter cards
- * arrive in Sprint 2. This page exists to (a) prove the cookie round-trip
- * works end-to-end and (b) give the magic-link callback somewhere to land.
+ * Sprint 1: gains a navigation card to /dashboard/drugs so V can
+ * exercise the typeahead. The queue + encounter cards arrive in
+ * Sprint 2; for now this is a routing hub.
  */
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentDoctor } from '@/lib/auth';
 
@@ -45,18 +46,39 @@ export default async function Dashboard() {
         <h1 className="mb-2 text-3xl font-semibold tracking-tight text-even-navy">
           Welcome
         </h1>
-        <p className="mb-8 text-sm text-even-ink-600">
-          You are signed in as <span className="font-mono text-even-navy">{doctor.email}</span>.
+        <p className="mb-10 text-sm text-even-ink-600">
+          You are signed in as{' '}
+          <span className="font-mono text-even-navy">{doctor.email}</span>.
         </p>
 
-        <div className="rounded-xl border border-even-ink-200 bg-white p-6">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-even-ink-500">
-            Sprint 0 · M0.4
-          </p>
-          <p className="text-sm text-even-ink-600">
-            Auth shell is live. The patient queue, encounter screen, and
-            prescription compose flow ship in Sprints 1–4.
-          </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Link
+            href="/dashboard/drugs"
+            className="group rounded-xl border border-even-ink-200 bg-white p-6 transition hover:border-even-blue-200 hover:shadow-sm"
+          >
+            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-even-blue-700">
+              Sprint 1 · M1.3
+            </p>
+            <h2 className="mb-1 text-lg font-semibold text-even-navy group-hover:text-even-blue-700">
+              Drug typeahead →
+            </h2>
+            <p className="text-sm text-even-ink-600">
+              Search 2,174 drugs by brand or generic. Sprint 4 drops this
+              into the prescription compose row.
+            </p>
+          </Link>
+
+          <div className="rounded-xl border border-dashed border-even-ink-200 bg-white p-6 opacity-60">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-even-ink-400">
+              Sprint 2 · next
+            </p>
+            <h2 className="mb-1 text-lg font-semibold text-even-ink-500">
+              Patient queue
+            </h2>
+            <p className="text-sm text-even-ink-500">
+              Queue + encounter lifecycle ships in Sprint 2.
+            </p>
+          </div>
         </div>
       </section>
     </main>
