@@ -242,7 +242,15 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
       <Section
         label="Chief complaint"
         desc="Tap chips for the common shortcuts. Add detail in the textarea."
-        dictate={!readOnly ? { encounterId: initial.id, section: 'chief_complaint' } : undefined}
+        dictate={
+          !readOnly
+            ? {
+                encounterId: initial.id,
+                section: 'chief_complaint',
+                onTranscript: (t) => setCc((cur) => appendTranscript(cur, t)),
+              }
+            : undefined
+        }
       >
         <CcChipGrid
           selected={ccChips}
@@ -277,7 +285,15 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
       <Section
         label="Exam findings"
         desc="What you observed."
-        dictate={!readOnly ? { encounterId: initial.id, section: 'exam_findings' } : undefined}
+        dictate={
+          !readOnly
+            ? {
+                encounterId: initial.id,
+                section: 'exam_findings',
+                onTranscript: (t) => setExam((cur) => appendTranscript(cur, t)),
+              }
+            : undefined
+        }
       >
         <textarea
           value={exam}
@@ -292,7 +308,15 @@ export function EncounterEditor({ initial }: { initial: EncounterEditable }) {
       <Section
         label="Assessment"
         desc="Impression + ICD-10 codes."
-        dictate={!readOnly ? { encounterId: initial.id, section: 'assessment' } : undefined}
+        dictate={
+          !readOnly
+            ? {
+                encounterId: initial.id,
+                section: 'assessment',
+                onTranscript: (t) => setAssessment((cur) => appendTranscript(cur, t)),
+              }
+            : undefined
+        }
       >
         {assessmentCodes.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-2">
@@ -473,6 +497,7 @@ function Section({
       | 'assessment'
       | 'prescription'
       | 'disposition';
+    onTranscript?: (t: string) => void;
   };
   children: React.ReactNode;
 }) {
@@ -488,6 +513,7 @@ function Section({
             <DictateButton
               encounterId={dictate.encounterId}
               section={dictate.section}
+              onTranscript={dictate.onTranscript}
             />
           )}
         </div>
@@ -496,6 +522,15 @@ function Section({
       {children}
     </div>
   );
+}
+
+/** Append a transcript to an existing field. Drops the trailing
+ *  newline if the field is empty so the result doesn't lead with one. */
+function appendTranscript(current: string, transcript: string): string {
+  const t = transcript.trim();
+  if (!t) return current;
+  if (!current.trim()) return t;
+  return `${current.trimEnd()}\n${t}`;
 }
 
 function CcChipGrid({
