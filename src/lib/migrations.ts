@@ -560,6 +560,72 @@ export const MIGRATIONS: Migration[] = [
       ON CONFLICT (email) DO UPDATE SET role = 'admin';
     `,
   },
+  {
+    version: 19,
+    name: 'lab_orders_v21_extensions',
+    sql: `
+      -- v2.1.1: Lab Workstation extensions on top of v13's lab_orders/lab_results.
+      --
+      -- Three things change:
+      --   1. CCE can pre-stage labs before the doctor sees the patient
+      --      (Round-extra decision: "Doctor + CCE"). pre_staged_by_cce_id
+      --      records who, and a new 'pre_staged' status keeps these out of
+      --      the lab tech's inbox until the doctor confirms ("Send to lab"
+      --      flips pre_staged → pending and atomically pauses the encounter).
+      --   2. ordering_doctor_id becomes nullable because a pre_staged
+      --      order may not have a confirmed doctor yet (the row gets
+      --      stamped with the doctor's id on confirm).
+      --   3. Qwen vision auto-post flow needs to remember extraction
+      --      confidence + raw response so the tech UI can show why we
+      --      auto-posted (or didn't) and the audit trail keeps the raw
+      --      JSON for later debugging.
+
+      -- Make ordering_doctor_id nullable (pre_staged orders haven't been
+      -- confirmed by a doctor yet).
+      ALTER TABLE lab_orders
+        ALTER COLUMN ordering_doctor_id DROP NOT NULL;
+
+      -- Track which CCE pre-staged the order, if any.
+      ALTER TABLE lab_orders
+        ADD COLUMN IF NOT EXISTS pre_staged_by_cce_id UUID
+          REFERENCES doctors(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS pre_staged_at TIMESTAMPTZ;
+
+      -- Per-order PDF + Qwen extraction metadata. Lab results live in
+      -- the lab_results table; this is order-level provenance.
+      ALTER TABLE lab_orders
+        ADD COLUMN IF NOT EXISTS source_pdf_url TEXT,
+        ADD COLUMN IF NOT EXISTS extracted_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS extraction_confidence NUMERIC,
+        ADD COLUMN IF NOT EXISTS extraction_raw JSONB,
+        ADD COLUMN IF NOT EXISTS extraction_lab_tech_id UUID
+          REFERENCES doctors(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS auto_posted BOOLEAN NOT NULL DEFAULT FALSE;
+
+      -- Extend the status CHECK to allow 'pre_staged'.
+      DO $$
+      BEGIN
+        ALTER TABLE lab_orders DROP CONSTRAINT IF EXISTS lab_orders_status_check;
+      EXCEPTION WHEN undefined_object THEN NULL;
+      END $$;
+      ALTER TABLE lab_orders
+        ADD CONSTRAINT lab_orders_status_check
+        CHECK (status IN ('pre_staged','pending','in_progress','awaiting_confirmation','resulted','cancelled'));
+
+      -- Index for the lab tech's inbox: anything not pre_staged and not
+      -- resulted, ordered FIFO.
+      CREATE INDEX IF NOT EXISTS idx_lab_orders_inbox
+        ON lab_orders(status, ordered_at)
+        WHERE status IN ('pending','in_progress','awaiting_confirmation');
+
+      -- Per-result confidence (from Qwen). Critical for the auto-post
+      -- threshold (≥0.9 → auto-post; else edit grid).
+      ALTER TABLE lab_results
+        ADD COLUMN IF NOT EXISTS confidence_score NUMERIC,
+        ADD COLUMN IF NOT EXISTS abnormal_flag TEXT
+          CHECK (abnormal_flag IN ('low','high','critical_low','critical_high','normal','unknown'));
+    `,
+  },
 ];
 
 /**

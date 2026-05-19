@@ -20,6 +20,7 @@ import { pool } from '@/lib/db';
 import { PatientSearch } from '@/components/PatientSearch';
 import { RegisterPatientModal } from '@/components/RegisterPatientModal';
 import { QueueLive } from '@/components/QueueLive';
+import { PreStageLabButton } from '@/components/PreStageLabButton';
 import { actionMarkDiagnosticReady } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -45,6 +46,7 @@ type EncounterRow = {
   patient_sex: 'M' | 'F' | 'O';
   intake_visit_reason: string | null;
   pending_diagnostic_test: string | null;
+  pre_staged_lab_count: number;
 };
 
 type LabPending = {
@@ -152,10 +154,33 @@ export default async function ReceptionPage() {
         patient_sex: r.patient_sex ?? 'O',
         intake_visit_reason: r.intake_visit_reason,
         pending_diagnostic_test: r.pending_diagnostic_test,
+        pre_staged_lab_count: 0,
       });
     }
   }
   const roomList = Array.from(rooms.values());
+
+  // 1b. Pre-staged lab counts per encounter — for the 🧪 badge on the
+  //     CCE pre-stage button.
+  const allEncIds = roomList.flatMap((r) => r.encounters.map((e) => e.encounter_id));
+  if (allEncIds.length > 0) {
+    const { rows: preCounts } = await pool.query<{
+      encounter_id: string;
+      cnt: string;
+    }>(
+      `SELECT encounter_id, COUNT(*)::text AS cnt
+         FROM lab_orders
+         WHERE encounter_id = ANY($1::uuid[]) AND status = 'pre_staged'
+         GROUP BY encounter_id`,
+      [allEncIds],
+    );
+    const byId = new Map(preCounts.map((p) => [p.encounter_id, parseInt(p.cnt, 10) || 0]));
+    for (const room of roomList) {
+      for (const enc of room.encounters) {
+        enc.pre_staged_lab_count = byId.get(enc.encounter_id) ?? 0;
+      }
+    }
+  }
 
   // 2. Lab dispatch panel — every paused encounter across the hospital.
   const { rows: labPending } = await pool.query<LabPending>(
@@ -300,9 +325,9 @@ function RoomQueueCard({ room }: { room: RoomWithQueue }) {
                 {list.map((e) => (
                   <li
                     key={e.encounter_id}
-                    className="flex items-baseline justify-between gap-2 text-xs"
+                    className="flex items-center justify-between gap-2 text-xs"
                   >
-                    <span className="truncate">
+                    <span className="min-w-0 flex-1 truncate">
                       <span className="font-medium text-even-navy">
                         {e.patient_name}
                       </span>
@@ -316,8 +341,20 @@ function RoomQueueCard({ room }: { room: RoomWithQueue }) {
                         </span>
                       )}
                     </span>
-                    <span className="font-mono text-[10px] text-even-ink-400">
-                      {e.patient_mrn.split('-').pop()}
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {/* Pre-stage allowed only before doctor starts. */}
+                      {(e.status === 'registered' ||
+                        e.status === 'at_triage' ||
+                        e.status === 'waiting_for_doctor') && (
+                        <PreStageLabButton
+                          encounterId={e.encounter_id}
+                          patientName={e.patient_name}
+                          existingPreStagedCount={e.pre_staged_lab_count}
+                        />
+                      )}
+                      <span className="font-mono text-[10px] text-even-ink-400">
+                        {e.patient_mrn.split('-').pop()}
+                      </span>
                     </span>
                   </li>
                 ))}

@@ -28,6 +28,7 @@ import type { PrescriptionLine } from './DrugRow';
 import { AmbientRecorder } from './AmbientRecorder';
 import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewer';
 import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
+import { OrderLabModal } from './OrderLabModal';
 import { SubmitConfirmModal } from './SubmitConfirmModal';
 
 type Vitals = {
@@ -123,6 +124,7 @@ export function EncounterEditor({
   const canSendToDiagnostics =
     initial.status === 'active' || initial.status === 'ready_to_resume';
   const [diagModalOpen, setDiagModalOpen] = useState(false);
+  const [labModalOpen, setLabModalOpen] = useState(false);
   const [confirmModalOpen, setConfirmModalOpen] = useState(false);
 
   const [ccChips, setCcChips] = useState<string[]>(initial.chief_complaint_chips ?? []);
@@ -589,10 +591,21 @@ export function EncounterEditor({
               {canSendToDiagnostics && (
                 <button
                   type="button"
+                  onClick={() => setLabModalOpen(true)}
+                  className="rounded-lg border border-even-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-even-blue-800 transition hover:bg-even-blue-50"
+                  title="Multi-test lab panel (v2.1) with CCE pre-stage confirmation"
+                >
+                  Order labs
+                </button>
+              )}
+              {canSendToDiagnostics && (
+                <button
+                  type="button"
                   onClick={() => setDiagModalOpen(true)}
                   className="rounded-lg border border-even-pink-300 bg-white px-4 py-2.5 text-sm font-semibold text-even-pink-800 transition hover:bg-even-pink-50"
+                  title="Imaging / radiology (CXR, ECG, USG, Echo)"
                 >
-                  Send to diagnostics
+                  Imaging
                 </button>
               )}
               <button
@@ -614,6 +627,13 @@ export function EncounterEditor({
         patientName={patient.name}
         open={diagModalOpen}
         onClose={() => setDiagModalOpen(false)}
+      />
+
+      <OrderLabModal
+        encounterId={initial.id}
+        patientName={patient.name}
+        open={labModalOpen}
+        onClose={() => setLabModalOpen(false)}
       />
 
       <SubmitConfirmModal
