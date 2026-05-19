@@ -235,6 +235,7 @@ export default async function LabOrderPage({
             canUpload={isMine || session.role === 'admin'}
             initialItems={order.extraction_raw?.items ?? null}
             initialConfidence={order.extraction_confidence ?? null}
+            initialBlobUrl={order.source_pdf_url ?? null}
           />
         )}
         {order.status === 'resulted' && (
