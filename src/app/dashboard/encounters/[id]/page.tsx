@@ -12,6 +12,7 @@ import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
 import { EncounterEditor, type EncounterEditable } from '@/components/EncounterEditor';
 import { EncounterLabResults } from '@/components/EncounterLabResults';
+import { VoiceQueryFab } from '@/components/VoiceQueryFab';
 import type { PrescriptionLine } from '@/components/DrugRow';
 import {
   HistoryPanel,
@@ -39,6 +40,7 @@ type Row = EncounterEditable & {
   intake_visit_reason: string | null;
   triage_completed_at: string | null;
   triage_nurse_name: string | null;
+  ddi_findings: unknown | null;
 };
 
 export default async function EncounterPage({
@@ -73,6 +75,7 @@ export default async function EncounterPage({
        e.follow_up_days,
        e.referral_target,
        e.disposition_label_override,
+       e.ddi_findings,
        p.name AS patient_name,
        p.mrn AS patient_mrn,
        p.age_years AS patient_age_years,
@@ -158,16 +161,22 @@ export default async function EncounterPage({
         encounters={panelData.encounters}
       />
       <header className="border-b border-even-ink-100 bg-white">
-        <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-6 py-4">
           <Link
             href="/dashboard"
             className="text-xs font-medium uppercase tracking-wider text-even-ink-500 hover:text-even-navy"
           >
             ← Back to queue
           </Link>
-          <span className="text-[10px] font-mono text-even-ink-400">
-            {row.encounter_number} · {row.status.replace('_', ' ')}
-          </span>
+          <div className="flex items-center gap-3">
+            {/* v2.2.3 — push-to-talk voice query */}
+            {row.status !== 'completed' && (
+              <VoiceQueryFab encounterId={row.id} />
+            )}
+            <span className="text-[10px] font-mono text-even-ink-400">
+              {row.encounter_number} · {row.status.replace('_', ' ')}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -283,6 +292,7 @@ export default async function EncounterPage({
             referral_target: row.referral_target,
             disposition_label_override: row.disposition_label_override ?? null,
             prescription_lines: prescriptionLines,
+            ddi_findings: row.ddi_findings ?? null,
           }}
         />
       </section>

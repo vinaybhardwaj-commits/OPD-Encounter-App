@@ -14,9 +14,10 @@
  *   - Save state indicator mirrors the encounter editor's pattern.
  *   - Read-only when the encounter is completed.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DrugTypeahead } from './DrugTypeahead';
 import { DrugRow, lineFromDrug, type PrescriptionLine } from './DrugRow';
+import { DdiBanner } from './DdiBanner';
 import { findSmartDefaults } from '@/lib/drug-defaults';
 import type { DrugSearchResult } from '@/lib/types';
 
@@ -36,12 +37,19 @@ export type PrescriptionComposeProps = {
   encounterId: string;
   initialLines: PrescriptionLine[];
   readOnly?: boolean;
+  /**
+   * v2.2.1 — cached DDI scan payload from encounters.ddi_findings. The
+   * banner uses it on first mount to avoid an immediate re-scan when
+   * the page refreshes without a prescription change.
+   */
+  initialDdi?: unknown | null;
 };
 
 export function PrescriptionCompose({
   encounterId,
   initialLines,
   readOnly,
+  initialDdi,
 }: PrescriptionComposeProps) {
   const [lines, setLines] = useState<PrescriptionLine[]>(initialLines);
   const [adderOpen, setAdderOpen] = useState(false);
@@ -138,6 +146,17 @@ export function PrescriptionCompose({
   const saveTone =
     saveState === 'error' ? 'text-even-pink-700' : 'text-even-ink-400';
 
+  // v2.2.1 — DDI signature feeds the banner's debounced re-scan trigger.
+  // Compose a stable string from the parts that actually matter for DDI
+  // (drug identity + dose). Frequency / timing tweaks don't re-scan.
+  const ddiSignature = useMemo(
+    () =>
+      lines
+        .map((l) => `${l.generic_name || l.brand_name || ''}|${l.strength ?? ''}`)
+        .join('||'),
+    [lines],
+  );
+
   return (
     <div>
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -152,6 +171,18 @@ export function PrescriptionCompose({
           </span>
         )}
       </div>
+
+      {/* v2.2.1 — Qwen DDI scan banner (always warn, never block) */}
+      {!readOnly && lines.length > 0 && (
+        <div className="mb-4">
+          <DdiBanner
+            encounterId={encounterId}
+            linesSignature={ddiSignature}
+            hasLines={lines.length > 0}
+            initial={(initialDdi as Parameters<typeof DdiBanner>[0]['initial']) ?? null}
+          />
+        </div>
+      )}
 
       {!readOnly && (
         <div className="mb-4">

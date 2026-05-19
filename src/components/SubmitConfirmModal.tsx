@@ -19,6 +19,19 @@ import { useRouter } from 'next/navigation';
 import { lookupIcd10 } from '@/lib/icd10';
 import type { PrescriptionLine } from './DrugRow';
 
+type DdxFinding = {
+  condition: string;
+  likelihood: 'high' | 'medium' | 'low';
+  rationale: string;
+  source_encounter_ids: string[];
+};
+
+type DdxState =
+  | { kind: 'loading' }
+  | { kind: 'ok'; findings: DdxFinding[] }
+  | { kind: 'failed'; error: string }
+  | { kind: 'empty' };
+
 export type SubmitConfirmModalProps = {
   open: boolean;
   onClose: () => void;
@@ -60,6 +73,7 @@ export function SubmitConfirmModal({
   } | null>(null);
   const [prescription_lines, setPrescriptionLines] = useState<PrescriptionLine[]>([]);
   const [loadingRx, setLoadingRx] = useState(false);
+  const [ddx, setDdx] = useState<DdxState>({ kind: 'loading' });
 
   // Fetch the live prescription state every time the modal opens.
   // The PrescriptionCompose's debounced auto-save has usually flushed
@@ -71,6 +85,7 @@ export function SubmitConfirmModal({
     setPhase('preview');
     setError(null);
     setDispatchInfo(null);
+    setDdx({ kind: 'loading' });
     fetch(`/api/encounters/${encounterId}/prescription`)
       .then((r) => r.json())
       .then((j: { ok?: boolean; prescription?: { lines?: PrescriptionLine[] } | null }) => {
@@ -80,6 +95,32 @@ export function SubmitConfirmModal({
         /* fall back to empty; the dispatch endpoint will still find DB-side lines */
       })
       .finally(() => setLoadingRx(false));
+
+    // v2.2.2 — Fire the DDx scan in parallel. Renders inline.
+    fetch(`/api/encounters/${encounterId}/ddx`, { method: 'POST' })
+      .then((r) => r.json())
+      .then(
+        (j: {
+          ok?: boolean;
+          status?: 'ok' | 'failed';
+          findings?: DdxFinding[];
+          error?: string;
+        }) => {
+          if (j.status === 'failed') {
+            setDdx({ kind: 'failed', error: j.error ?? 'ddx_failed' });
+          } else if (j.status === 'ok' && j.findings && j.findings.length > 0) {
+            setDdx({ kind: 'ok', findings: j.findings });
+          } else {
+            setDdx({ kind: 'empty' });
+          }
+        },
+      )
+      .catch((e) =>
+        setDdx({
+          kind: 'failed',
+          error: e instanceof Error ? e.message : 'network_error',
+        }),
+      );
   }, [open, encounterId]);
 
   if (!open) return null;
@@ -218,6 +259,9 @@ export function SubmitConfirmModal({
                 </div>
               )}
 
+              {/* v2.2.2 — Did you consider? */}
+              <DdxSection state={ddx} />
+
               {/* Prescription summary */}
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-even-ink-500">
@@ -310,6 +354,64 @@ export function SubmitConfirmModal({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function DdxSection({ state }: { state: DdxState }) {
+  if (state.kind === 'empty') return null;
+  return (
+    <div>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-even-ink-500">
+        Did you consider?{' '}
+        <span className="font-normal text-even-ink-400">· Qwen DDx</span>
+      </p>
+      {state.kind === 'loading' && (
+        <p className="mt-1 text-xs italic text-even-ink-400">
+          Running differential…
+        </p>
+      )}
+      {state.kind === 'failed' && (
+        <p className="mt-1 rounded-md bg-even-ink-50 px-2 py-1 text-[11px] text-even-ink-500">
+          DDx unavailable — Qwen failed ({state.error}). Submit isn&apos;t
+          blocked.
+        </p>
+      )}
+      {state.kind === 'ok' && (
+        <ul className="mt-1 space-y-1.5">
+          {state.findings.map((f, idx) => (
+            <li
+              key={idx}
+              className={`rounded-md border px-3 py-2 text-[11px] ${
+                f.likelihood === 'high'
+                  ? 'border-even-pink-200 bg-even-pink-50/60'
+                  : f.likelihood === 'medium'
+                  ? 'border-amber-200 bg-amber-50/60'
+                  : 'border-even-ink-200 bg-white'
+              }`}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-semibold text-even-navy">
+                  {f.condition}
+                </span>
+                <span className="text-[9px] font-medium uppercase tracking-wider text-even-ink-500">
+                  {f.likelihood} likelihood
+                </span>
+              </div>
+              <p className="mt-0.5 text-even-ink-700">{f.rationale}</p>
+              {f.source_encounter_ids.length > 0 && (
+                <p className="mt-1 font-mono text-[9px] text-even-ink-400">
+                  Based on{' '}
+                  {f.source_encounter_ids.length === 1 ? 'encounter' : 'encounters'}{' '}
+                  {f.source_encounter_ids
+                    .map((id) => id.slice(0, 8))
+                    .join(', ')}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

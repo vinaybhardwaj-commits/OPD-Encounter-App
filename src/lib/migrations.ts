@@ -654,6 +654,53 @@ export const MIGRATIONS: Migration[] = [
         WHERE claimed_by_lab_tech_id IS NOT NULL;
     `,
   },
+  {
+    version: 21,
+    name: 'encounters_ddx_findings',
+    sql: `
+      -- v2.2.2 — Auto-DDx-on-Submit (PRD Round 5 #12). Mirrors the
+      -- v15 ddi_findings column pattern.
+      --
+      -- Shape:
+      --   {
+      --     status: 'ok' | 'failed',
+      --     findings: [{
+      --       condition: string,
+      --       likelihood: 'high' | 'medium' | 'low',
+      --       rationale: string,
+      --       source_encounter_ids: uuid[],   -- past encounters that informed
+      --     }],
+      --     scanned_at, latency_ms, error?
+      --   }
+      --
+      -- Stays JSONB so we can iterate on shape without migrations. The
+      -- DDx is computed once on Submit click and cached so the
+      -- confirmation modal renders instantly on subsequent opens.
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ddx_findings JSONB;
+    `,
+  },
+  {
+    version: 22,
+    name: 'voice_queries',
+    sql: `
+      -- v2.2.3 — Push-to-talk voice query (PRD Round 5 #11). Stores
+      -- transcript + Qwen answer + provenance. NO audio_blob_url —
+      -- per lock #14 we keep transcript + answer only to save storage.
+      CREATE TABLE IF NOT EXISTS voice_queries (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        encounter_id UUID NOT NULL REFERENCES encounters(id) ON DELETE CASCADE,
+        doctor_id UUID NOT NULL REFERENCES doctors(id),
+        question_transcript TEXT NOT NULL,
+        answer_text TEXT NOT NULL,
+        sources_json JSONB,
+        latency_ms INT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_voice_queries_encounter
+        ON voice_queries(encounter_id, created_at DESC);
+    `,
+  },
 ];
 
 /**

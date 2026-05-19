@@ -69,6 +69,8 @@ export type EncounterEditable = {
   referral_target: string | null;
   disposition_label_override: string | null;
   prescription_lines: PrescriptionLine[];
+  /** v2.2.1 — cached Qwen DDI scan output. Banner pre-renders from this. */
+  ddi_findings?: unknown | null;
 };
 
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -444,6 +446,7 @@ export function EncounterEditor({
           encounterId={initial.id}
           initialLines={initial.prescription_lines ?? []}
           readOnly={readOnly}
+          initialDdi={initial.ddi_findings ?? null}
         />
       </Section>
 
