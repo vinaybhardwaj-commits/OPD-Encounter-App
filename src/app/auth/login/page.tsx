@@ -185,6 +185,12 @@ function LoginForm() {
               <span className="font-mono">notifications.even.in</span>{' '}
               DNS is verified.
             </p>
+            <a
+              href="/demo/drug-ddi"
+              className="mt-4 inline-flex w-full items-center justify-center rounded-lg border border-even-blue-200 bg-white px-4 py-2 text-xs font-semibold text-even-blue-800 transition hover:bg-even-blue-50"
+            >
+              💊 Try the standalone Qwen drug-interaction demo →
+            </a>
           </div>
         )}
 
