@@ -17,6 +17,8 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
 import { pool } from '@/lib/db';
 import { QueueLive } from '@/components/QueueLive';
+import { PdfUploadAndExtract } from '@/components/PdfUploadAndExtract';
+import type { ExtractedLabItem } from '@/lib/qwen-vision';
 import { actionClaimOrder, actionReleaseOrder } from '../actions';
 
 export const dynamic = 'force-dynamic';
@@ -46,6 +48,7 @@ type Detail = {
   source_pdf_url: string | null;
   extracted_at: string | null;
   extraction_confidence: number | null;
+  extraction_raw: { items?: ExtractedLabItem[] } | null;
   auto_posted: boolean;
 };
 
@@ -87,6 +90,7 @@ export default async function LabOrderPage({
        lo.source_pdf_url,
        lo.extracted_at::text AS extracted_at,
        lo.extraction_confidence,
+       lo.extraction_raw,
        lo.auto_posted
      FROM lab_orders lo
      JOIN patients p ON p.id = lo.patient_id
@@ -224,24 +228,33 @@ export default async function LabOrderPage({
           )}
         </section>
 
-        {/* Upload placeholder — v2.1.3 will replace */}
-        <section className="rounded-2xl border border-dashed border-even-ink-300 bg-white p-6">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-even-ink-500">
-            Result intake
-          </h2>
-          <p className="mt-1 text-xs text-even-ink-500">
-            PDF upload + Qwen-VL extraction lands in v2.1.3. For now, mark this
-            order as in-progress with the Claim button above and we&apos;ll wire
-            the upload UI here next.
-          </p>
-          <button
-            type="button"
-            disabled
-            className="mt-3 cursor-not-allowed rounded-lg bg-even-ink-100 px-4 py-2 text-xs font-medium text-even-ink-400"
-          >
-            Upload PDF (v2.1.3)
-          </button>
-        </section>
+        {/* v2.1.3 — real upload + Qwen-VL extract + 10s auto-confirm */}
+        {order.status !== 'resulted' && order.status !== 'cancelled' && (
+          <PdfUploadAndExtract
+            orderId={order.id}
+            canUpload={isMine || session.role === 'admin'}
+            initialItems={order.extraction_raw?.items ?? null}
+            initialConfidence={order.extraction_confidence ?? null}
+          />
+        )}
+        {order.status === 'resulted' && (
+          <section className="rounded-2xl border border-even-blue-200 bg-even-blue-50/50 p-6 text-xs text-even-blue-900">
+            ✓ Results posted. The encounter has been notified.
+            {order.source_pdf_url && (
+              <>
+                {' '}
+                · <a
+                  className="underline"
+                  href={order.source_pdf_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Source PDF
+                </a>
+              </>
+            )}
+          </section>
+        )}
       </section>
     </main>
   );
