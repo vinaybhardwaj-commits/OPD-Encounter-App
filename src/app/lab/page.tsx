@@ -357,13 +357,13 @@ function OrderCard({
             </p>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           {tab === 'pending' && (
             <form action={actionClaimOrder}>
               <input type="hidden" name="order_id" value={order.id} />
               <button
                 type="submit"
-                className="rounded-lg bg-even-pink-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-even-pink-800"
+                className="min-h-[44px] rounded-lg bg-even-pink-700 px-4 py-2 text-xs font-semibold text-white transition hover:bg-even-pink-800"
               >
                 Claim
               </button>
@@ -374,7 +374,7 @@ function OrderCard({
               <input type="hidden" name="order_id" value={order.id} />
               <button
                 type="submit"
-                className="rounded-lg border border-even-pink-300 bg-white px-3 py-1.5 text-xs font-semibold text-even-pink-800 transition hover:bg-even-pink-50"
+                className="min-h-[44px] rounded-lg border border-even-pink-300 bg-white px-4 py-2 text-xs font-semibold text-even-pink-800 transition hover:bg-even-pink-50"
                 title="Take over from the current tech"
               >
                 Take over
@@ -394,7 +394,7 @@ function OrderCard({
           )}
           <Link
             href={`/lab/${order.id}`}
-            className="rounded-lg bg-even-navy px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-even-navy-700"
+            className="min-h-[44px] rounded-lg bg-even-navy px-4 py-2 text-xs font-semibold text-white transition hover:bg-even-navy-700"
           >
             Open
           </Link>

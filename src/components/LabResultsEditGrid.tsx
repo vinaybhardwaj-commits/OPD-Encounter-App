@@ -145,16 +145,17 @@ export function LabResultsEditGrid({
 
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-      {/* Source preview pane */}
-      <div className="min-h-[420px] overflow-hidden rounded-xl border border-even-ink-200 bg-even-ink-50/40">
+      {/* Source preview pane — Polish #6: shorter on mobile so the
+          edit grid stays in view below it without long scroll. */}
+      <div className="min-h-[280px] overflow-hidden rounded-xl border border-even-ink-200 bg-even-ink-50/40 sm:min-h-[360px] lg:min-h-[420px]">
         {blobUrl ? (
           <iframe
             src={blobUrl}
-            className="h-full min-h-[420px] w-full"
+            className="h-full min-h-[280px] w-full sm:min-h-[360px] lg:min-h-[420px]"
             title="Source report"
           />
         ) : (
-          <div className="flex h-full min-h-[420px] items-center justify-center p-6 text-center text-xs text-even-ink-500">
+          <div className="flex h-full min-h-[280px] items-center justify-center p-6 text-center text-xs text-even-ink-500 sm:min-h-[360px] lg:min-h-[420px]">
             No source preview yet. Upload a PDF/image to see it here.
           </div>
         )}
