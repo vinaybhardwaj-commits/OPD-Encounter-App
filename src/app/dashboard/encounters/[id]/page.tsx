@@ -13,6 +13,7 @@ import { getCurrentDoctor } from '@/lib/auth';
 import { EncounterEditor, type EncounterEditable } from '@/components/EncounterEditor';
 import { EncounterLabResults } from '@/components/EncounterLabResults';
 import { VoiceQueryFab } from '@/components/VoiceQueryFab';
+import { HandoffBanner } from '@/components/HandoffBanner';
 import type { PrescriptionLine } from '@/components/DrugRow';
 import {
   HistoryPanel,
@@ -41,6 +42,14 @@ type Row = EncounterEditable & {
   triage_completed_at: string | null;
   triage_nurse_name: string | null;
   ddi_findings: unknown | null;
+  // v2.3 handoff fields
+  handoff_note: string | null;
+  handoff_ack_by: string | null;
+  handoff_ack_at: string | null;
+  handoff_flagged_at: string | null; // = encounters.updated_at at flag time
+  contributors_json: Array<{ doctor_id: string; joined_at: string; via: string }> | null;
+  section_editors: Record<string, { doctor_id: string; edited_at: string }> | null;
+  prev_owner_name: string | null;
 };
 
 export default async function EncounterPage({
@@ -76,6 +85,18 @@ export default async function EncounterPage({
        e.referral_target,
        e.disposition_label_override,
        e.ddi_findings,
+       e.handoff_note,
+       e.handoff_ack_by,
+       e.handoff_ack_at::text AS handoff_ack_at,
+       e.updated_at::text AS handoff_flagged_at,
+       e.contributors_json,
+       e.section_editors,
+       (
+         SELECT d2.name FROM doctors d2
+         WHERE d2.id = (e.contributors_json->0->>'doctor_id')::uuid
+           AND d2.id <> e.doctor_id
+         LIMIT 1
+       ) AS prev_owner_name,
        p.name AS patient_name,
        p.mrn AS patient_mrn,
        p.age_years AS patient_age_years,
@@ -137,6 +158,34 @@ export default async function EncounterPage({
     abnormal_count: Number(labSumRows[0]?.abnormal ?? 0),
     critical_count: Number(labSumRows[0]?.critical ?? 0),
   };
+
+  // v2.3 — resolve section_editors doctor_ids to names for attribution
+  // chips. One IN query gets every name we need.
+  const sectionEditorsMap = row.section_editors ?? {};
+  const editorIds = Array.from(
+    new Set(Object.values(sectionEditorsMap).map((v) => v.doctor_id).filter(Boolean)),
+  );
+  let editorNames = new Map<string, string>();
+  if (editorIds.length > 0) {
+    const { rows: nameRows } = await pool.query<{ id: string; name: string }>(
+      `SELECT id, name FROM doctors WHERE id = ANY($1::uuid[])`,
+      [editorIds],
+    );
+    editorNames = new Map(nameRows.map((r) => [r.id, r.name]));
+  }
+  // Resolve viewer's own doctors-row id so the strip can hide self-edits.
+  const { rows: selfRows } = await pool.query<{ id: string }>(
+    `SELECT id FROM doctors WHERE lower(email) = lower($1) LIMIT 1`,
+    [session.email],
+  );
+  const selfDoctorId = selfRows[0]?.id ?? null;
+  const sectionEditorsResolved: Record<string, { name: string; edited_at: string }> = {};
+  for (const [section, info] of Object.entries(sectionEditorsMap)) {
+    if (!info?.doctor_id || info.doctor_id === selfDoctorId) continue;
+    const name = editorNames.get(info.doctor_id);
+    if (!name) continue;
+    sectionEditorsResolved[section] = { name, edited_at: info.edited_at };
+  }
 
   // Load patient history for the PH.3 left panel — cached Qwen summary
   // + last 5 completed encounters. Cheap, runs in parallel-ish with
@@ -258,6 +307,19 @@ export default async function EncounterPage({
           )}
         </div>
 
+        {/* v2.3 — Handoff banner. Renders when an unacknowledged
+            handoff_note exists AND the viewing doctor is now the owner
+            (after claiming from /dashboard). The Acknowledge button
+            is idempotent for the current owner. */}
+        {row.handoff_note && !row.handoff_ack_by && row.prev_owner_name && (
+          <HandoffBanner
+            encounterId={row.id}
+            note={row.handoff_note}
+            fromDoctorName={row.prev_owner_name}
+            flaggedAt={row.handoff_flagged_at}
+          />
+        )}
+
         {/* v2.1.5 — doctor-side lab orders + results panel. Renders only
             when the encounter has any lab orders; sits above the
             EncounterEditor so abnormal flags are unmissable. */}
@@ -275,6 +337,8 @@ export default async function EncounterPage({
           }}
           ai={panelData.ai}
           labSummary={labSummary}
+          sectionEditors={sectionEditorsResolved}
+          selfDoctorId={selfDoctorId}
           initial={{
             id: row.id,
             encounter_number: row.encounter_number,

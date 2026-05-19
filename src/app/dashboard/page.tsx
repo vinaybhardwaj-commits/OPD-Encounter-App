@@ -15,8 +15,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentDoctor } from '@/lib/auth';
-import { getQueueForDoctor, type QueueCard } from '@/lib/queue';
-import { startEncounter } from './actions';
+import { getQueueForDoctor, type QueueCard, type HandoffCard } from '@/lib/queue';
+import { startEncounter, actionClaimHandoff } from './actions';
 import { PatientSearch } from '@/components/PatientSearch';
 import { QueueLive } from '@/components/QueueLive';
 
@@ -121,6 +121,9 @@ export default async function DashboardPage() {
       </header>
 
       <section className="mx-auto max-w-6xl space-y-8 px-6 py-8">
+        {q.needs_review.length > 0 && (
+          <HandoffLane cards={q.needs_review} />
+        )}
         {q.ready_to_resume.length > 0 && (
           <Lane
             title="Ready to resume"
@@ -439,5 +442,87 @@ function ResumeCard({
         <CardBody card={card} tone={tone} />
       </Link>
     </li>
+  );
+}
+
+/**
+ * v2.3 — Network-wide handoff lane. Any doctor signed in sees this
+ * regardless of whose encounter it is. Each card has a "Claim handoff"
+ * button that POSTs to /claim-handoff and pulls the encounter into
+ * the claiming doctor's own queue.
+ */
+function HandoffLane({ cards }: { cards: HandoffCard[] }) {
+  return (
+    <div>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-amber-800">
+            Needs review · handoff queue
+          </h2>
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
+            {cards.length}
+          </span>
+        </div>
+        <p className="text-xs text-even-ink-500">
+          Flagged for second opinion. Claim to pull into your queue.
+        </p>
+      </div>
+      <ul className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {cards.map((c) => (
+          <HandoffCardLi key={c.encounter_id} card={c} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function HandoffCardLi({ card }: { card: HandoffCard }) {
+  return (
+    <li>
+      <div className="rounded-xl border border-amber-300 bg-amber-50/70 p-4">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="truncate text-sm font-semibold text-even-navy">
+            {card.patient_name}
+          </span>
+          <span className="shrink-0 text-[11px] font-mono text-even-ink-400">
+            {card.patient_age_years}{card.patient_sex}
+          </span>
+        </div>
+        <div className="mt-1 text-[11px] text-even-ink-500 font-mono">
+          {card.patient_mrn}
+        </div>
+        <p className="mt-2 inline-flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-amber-900 ring-1 ring-amber-200">
+          🔁 from {firstName(card.current_doctor_name)}
+        </p>
+        <p className="mt-2 line-clamp-3 text-xs text-even-ink-700">
+          &ldquo;{card.handoff_note}&rdquo;
+        </p>
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-even-ink-400">
+            {card.room_name ?? '—'}
+          </span>
+          <ClaimHandoffButton encounterId={card.encounter_id} />
+        </div>
+      </div>
+    </li>
+  );
+}
+
+/**
+ * Tiny inline form that calls the claim-handoff endpoint via a server
+ * action exposed under /dashboard/actions.ts. Reusing the encounter id
+ * keeps the URL out of the user's address bar after the action runs.
+ */
+function ClaimHandoffButton({ encounterId }: { encounterId: string }) {
+  return (
+    <form action={actionClaimHandoff}>
+      <input type="hidden" name="encounter_id" value={encounterId} />
+      <button
+        type="submit"
+        className="rounded-md bg-amber-600 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-amber-700"
+      >
+        Claim handoff →
+      </button>
+    </form>
   );
 }

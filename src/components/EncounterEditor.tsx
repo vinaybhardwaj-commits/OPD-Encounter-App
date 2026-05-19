@@ -30,6 +30,7 @@ import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewe
 import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
 import { OrderLabModal } from './OrderLabModal';
 import { SubmitConfirmModal } from './SubmitConfirmModal';
+import { FlagHandoffModal } from './FlagHandoffModal';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -71,7 +72,18 @@ export type EncounterEditable = {
   prescription_lines: PrescriptionLine[];
   /** v2.2.1 — cached Qwen DDI scan output. Banner pre-renders from this. */
   ddi_findings?: unknown | null;
+  /**
+   * v2.3 — per-section last-edited-by map for multi-doctor attribution.
+   * Shape: { section_name: { doctor_id, edited_at } }
+   */
+  section_editors?: Record<string, { doctor_id: string; edited_at: string }> | null;
 };
+
+/**
+ * v2.3 — pre-resolved name map for the section_editors chips, so the
+ * client doesn't need to round-trip a doctor lookup per chip.
+ */
+export type SectionEditorNameMap = Record<string, { name: string; edited_at: string }>;
 
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
 
@@ -126,11 +138,17 @@ export function EncounterEditor({
   patient,
   ai,
   labSummary,
+  sectionEditors,
+  selfDoctorId,
 }: {
   initial: EncounterEditable;
   patient: EncounterPatient;
   ai?: EncounterAi;
   labSummary?: LabReturnSummary | null;
+  /** v2.3 — pre-resolved {section: {name, edited_at}} for attribution chips. */
+  sectionEditors?: SectionEditorNameMap | null;
+  /** v2.3 — viewing doctor's doctors-row id; chips suppressed when self. */
+  selfDoctorId?: string | null;
 }) {
   const aiSafe: EncounterAi = ai ?? AI_EMPTY;
   const router = useRouter();
@@ -140,6 +158,7 @@ export function EncounterEditor({
     initial.status === 'active' || initial.status === 'ready_to_resume';
   const [diagModalOpen, setDiagModalOpen] = useState(false);
   const [labModalOpen, setLabModalOpen] = useState(false);
+  const [handoffModalOpen, setHandoffModalOpen] = useState(false);
   const [confirmModalOpen, setConfirmModalOpen] = useState(false);
 
   const [ccChips, setCcChips] = useState<string[]>(initial.chief_complaint_chips ?? []);
@@ -299,6 +318,16 @@ export function EncounterEditor({
           You can still update notes; Submit is held until the encounter is
           back as Ready to resume.
         </div>
+      )}
+
+      {/* v2.3 — per-section attribution strip when multiple doctors
+          have touched the chart. Hidden when section_editors is empty or
+          only shows self. */}
+      {sectionEditors && (
+        <AttributionStrip
+          sectionEditors={sectionEditors}
+          selfDoctorId={selfDoctorId ?? null}
+        />
       )}
 
       <Section
@@ -618,6 +647,16 @@ export function EncounterEditor({
               {canSendToDiagnostics && (
                 <button
                   type="button"
+                  onClick={() => setHandoffModalOpen(true)}
+                  className="rounded-lg border border-amber-300 bg-white px-4 py-2.5 text-sm font-semibold text-amber-800 transition hover:bg-amber-50"
+                  title="Flag this encounter for another doctor's review (v2.3)"
+                >
+                  Flag for handoff
+                </button>
+              )}
+              {canSendToDiagnostics && (
+                <button
+                  type="button"
                   onClick={() => setDiagModalOpen(true)}
                   className="rounded-lg border border-even-pink-300 bg-white px-4 py-2.5 text-sm font-semibold text-even-pink-800 transition hover:bg-even-pink-50"
                   title="Imaging / radiology (CXR, ECG, USG, Echo)"
@@ -651,6 +690,13 @@ export function EncounterEditor({
         patientName={patient.name}
         open={labModalOpen}
         onClose={() => setLabModalOpen(false)}
+      />
+
+      <FlagHandoffModal
+        encounterId={initial.id}
+        patientName={patient.name}
+        open={handoffModalOpen}
+        onClose={() => setHandoffModalOpen(false)}
       />
 
       <SubmitConfirmModal
@@ -722,6 +768,88 @@ function Section({
       {children}
     </div>
   );
+}
+
+/**
+ * v2.3 — Compact attribution strip across the top of the editor. Shows
+ * "Section: Dr X · Ym ago" pills for every section that someone OTHER
+ * than the current viewer last edited. Self-edits are hidden so the
+ * strip stays signal-rich.
+ */
+const SECTION_LABELS: Record<string, string> = {
+  chief_complaint: 'CC',
+  exam_findings: 'Exam',
+  vitals: 'Vitals',
+  assessment: 'Assessment',
+  prescription: 'Rx',
+  disposition: 'Disposition',
+};
+
+function AttributionStrip({
+  sectionEditors,
+  selfDoctorId,
+}: {
+  sectionEditors: SectionEditorNameMap;
+  selfDoctorId: string | null;
+}) {
+  // Filter out self-edits and unknown editors.
+  const items: Array<{ section: string; name: string; edited_at: string }> = [];
+  for (const [section, info] of Object.entries(sectionEditors)) {
+    if (!info?.name) continue;
+    items.push({ section, name: info.name, edited_at: info.edited_at });
+  }
+  if (items.length === 0) return null;
+
+  // Order: stable section order (CC → Exam → Vitals → Assessment → Rx → Disposition).
+  const order = ['chief_complaint', 'exam_findings', 'vitals', 'assessment', 'prescription', 'disposition'];
+  items.sort((a, b) => order.indexOf(a.section) - order.indexOf(b.section));
+
+  return (
+    <div className="rounded-lg border border-even-ink-100 bg-even-ink-50/60 px-3 py-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-even-ink-500">
+        Chart contributors
+      </p>
+      <ul className="mt-1 flex flex-wrap gap-1.5">
+        {items.map((it) => (
+          <li
+            key={it.section}
+            className="inline-flex items-center gap-1 rounded-full border border-even-ink-200 bg-white px-2 py-0.5 text-[10px] text-even-ink-700"
+            title={`${SECTION_LABELS[it.section] ?? it.section} last edited by ${it.name} · ${new Date(it.edited_at).toLocaleString('en-IN')}`}
+          >
+            <span className="font-semibold text-even-navy">
+              {SECTION_LABELS[it.section] ?? it.section}
+            </span>
+            <span>·</span>
+            <span>{firstName(it.name)}</span>
+            <span className="text-even-ink-400">
+              · {relativeAge(it.edited_at)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {selfDoctorId && (
+        <p className="mt-1 text-[10px] text-even-ink-400">
+          Your edits aren&apos;t shown.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function firstName(full: string): string {
+  return (full.split(/\s+/)[0] || full).replace(/^Dr\.?\s+|^Nurse\s+/i, '');
+}
+
+function relativeAge(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '—';
+  const m = Math.floor((Date.now() - t) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
 
 function ResumeBanner({

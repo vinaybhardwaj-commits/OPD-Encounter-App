@@ -155,6 +155,46 @@ export async function PATCH(
     return NextResponse.json({ ok: true, encounter: existing, noop: true });
   }
 
+  // v2.3 — Stamp section_editors for each section this PATCH touches.
+  // Sections roll up multiple body keys (e.g. chief_complaint_chips +
+  // chief_complaint_text → 'chief_complaint'; disposition + follow_up_days
+  // + referral_target → 'disposition').
+  const sectionsTouched: string[] = [];
+  if ('chief_complaint_chips' in body || 'chief_complaint_text' in body)
+    sectionsTouched.push('chief_complaint');
+  if ('exam_findings' in body) sectionsTouched.push('exam_findings');
+  if ('vitals' in body) sectionsTouched.push('vitals');
+  if ('assessment_codes' in body || 'assessment_text' in body)
+    sectionsTouched.push('assessment');
+  if (
+    'disposition' in body ||
+    'follow_up_days' in body ||
+    'referral_target' in body ||
+    'disposition_label_override' in body
+  ) {
+    sectionsTouched.push('disposition');
+  }
+
+  if (sectionsTouched.length > 0) {
+    // Look up the caller's doctors-row id once.
+    const { rows: meRows } = await pool.query<{ id: string }>(
+      `SELECT id FROM doctors WHERE lower(email) = lower($1) LIMIT 1`,
+      [session.email],
+    );
+    const editorId = meRows[0]?.id;
+    if (editorId) {
+      // Build a jsonb_build_object for the merge — single-statement
+      // upsert into section_editors via concatenation.
+      const editorPayload: Record<string, { doctor_id: string; edited_at: string }> = {};
+      const now = new Date().toISOString();
+      for (const s of sectionsTouched) {
+        editorPayload[s] = { doctor_id: editorId, edited_at: now };
+      }
+      // Append a section_editors update to the same SQL.
+      sets.push(`section_editors = section_editors || $${vals.push(JSON.stringify(editorPayload))}::jsonb`);
+    }
+  }
+
   sets.push(`updated_at = NOW()`);
   vals.push(id);
   const sql = `UPDATE encounters SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING id`;

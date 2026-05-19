@@ -701,6 +701,52 @@ export const MIGRATIONS: Migration[] = [
         ON voice_queries(encounter_id, created_at DESC);
     `,
   },
+  {
+    version: 23,
+    name: 'encounters_multi_doctor_handoff',
+    sql: `
+      -- v2.3 — Multi-doctor handoff (pull model + per-section attribution).
+      --
+      -- Two new JSONB columns on encounters; no new tables (the data is
+      -- cheap to read alongside the encounter row + the shapes can
+      -- evolve without migrations).
+      --
+      -- contributors_json shape:
+      --   [
+      --     { doctor_id: <uuid>, joined_at: <iso>, via: 'initial' | 'handoff_claim' }
+      --   ]
+      --   Append-only on each ownership change. First entry is always
+      --   the initial doctor; each subsequent claim appends.
+      --
+      -- section_editors shape:
+      --   {
+      --     <section_name>: { doctor_id: <uuid>, edited_at: <iso> }
+      --   }
+      --   Updated by PATCH /api/encounters/[id] for each section
+      --   touched in that write. Per-section last-edited-by chip on the
+      --   encounter screen reads this map.
+      --
+      --   Sections tracked:
+      --     'chief_complaint' | 'exam_findings' | 'vitals' |
+      --     'assessment'      | 'prescription'   | 'disposition'
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS contributors_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS section_editors JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+      -- Backfill existing encounters with their initial doctor as the
+      -- only contributor. Use the existing doctor_id + started_at as a
+      -- reasonable proxy for joined_at.
+      UPDATE encounters
+      SET contributors_json = jsonb_build_array(
+        jsonb_build_object(
+          'doctor_id', doctor_id,
+          'joined_at', COALESCE(started_at, NOW()),
+          'via', 'initial'
+        )
+      )
+      WHERE contributors_json = '[]'::jsonb;
+    `,
+  },
 ];
 
 /**

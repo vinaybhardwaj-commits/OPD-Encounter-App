@@ -62,10 +62,31 @@ export type QueueCard = {
 
 export type DoctorQueue = {
   doctor: { id: string; email: string; name: string };
+  /**
+   * v2.3 — Network-wide "Needs review" lane. Encounters with a
+   * pending handoff (handoff_note set, no ack yet), across ALL
+   * doctors. Any signed-in doctor can claim from this lane.
+   */
+  needs_review: HandoffCard[];
   ready_to_resume: QueueCard[];
   waiting: QueueCard[];
   at_diagnostics: QueueCard[];
   completed: QueueCard[];
+};
+
+export type HandoffCard = {
+  encounter_id: string;
+  encounter_number: string;
+  patient_id: string;
+  patient_name: string;
+  patient_mrn: string;
+  patient_age_years: number;
+  patient_sex: 'M' | 'F' | 'O';
+  current_doctor_name: string;
+  current_doctor_email: string;
+  handoff_note: string;
+  flagged_at: string;
+  room_name: string | null;
 };
 
 /**
@@ -154,8 +175,38 @@ export async function getQueueForDoctor(
     else waiting.push(r); // waiting | waiting_for_doctor | active
   }
 
+  // v2.3 — Network-wide "Needs review" lane: encounters across ALL
+  // doctors with a pending handoff. The receiving doctor's queue
+  // (the one viewing this dashboard) sees them as claimable cards.
+  const { rows: handoffRows } = await pool.query<HandoffCard>(
+    `SELECT
+       e.id AS encounter_id,
+       e.encounter_number,
+       p.id AS patient_id,
+       p.name AS patient_name,
+       p.mrn AS patient_mrn,
+       p.age_years AS patient_age_years,
+       p.sex AS patient_sex,
+       d.name AS current_doctor_name,
+       d.email AS current_doctor_email,
+       e.handoff_note,
+       e.updated_at::text AS flagged_at,
+       r.name AS room_name
+     FROM encounters e
+     JOIN patients p ON p.id = e.patient_id
+     JOIN doctors d ON d.id = e.doctor_id
+     LEFT JOIN opd_rooms r ON r.id = e.room_id
+     WHERE e.handoff_note IS NOT NULL
+       AND e.handoff_ack_by IS NULL
+       AND e.status NOT IN ('completed')
+       AND e.encounter_date = CURRENT_DATE
+     ORDER BY e.updated_at DESC
+     LIMIT 50`,
+  );
+
   return {
     doctor,
+    needs_review: handoffRows,
     ready_to_resume,
     waiting,
     at_diagnostics,
