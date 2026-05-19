@@ -125,32 +125,134 @@ function LoginForm() {
           </form>
         )}
 
-        {/* Demo bypass — disappears when DEMO_MODE=false on Vercel */}
+        {/* Demo role picker — disappears when DEMO_MODE=false on Vercel.
+            One click per role signs you in as a seeded user and lands you
+            on that role's home surface. Lets a non-Even visitor walk the
+            full multi-actor v2 flow without needing real credentials. */}
         {!sent && (
           <div className="mt-6 border-t border-even-ink-100 pt-5">
             <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-even-ink-400">
-              Demo
+              Demo — try as any role
             </p>
-            <form action="/api/auth/demo-signin" method="POST">
-              <button
-                type="submit"
-                className="w-full rounded-lg border border-even-pink-200 bg-even-pink-50 px-4 py-2 text-sm font-semibold text-even-pink-800 transition hover:bg-even-pink-100"
-              >
-                Skip — sign in as Dr. Vinay
-              </button>
-            </form>
-            <p className="mt-2 text-[10px] text-even-ink-400">
-              One-click demo. Real pilot doctors will use the magic link
-              once <span className="font-mono">notifications.even.in</span> DNS is verified.
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <DemoButton
+                role=""
+                tone="navy"
+                emoji="🩺"
+                label="Doctor"
+                who="Dr Vinay"
+                surface="/dashboard"
+              />
+              <DemoButton
+                role="cce"
+                tone="blue"
+                emoji="📋"
+                label="CCE"
+                who="Lalitha Krishnan"
+                surface="/reception"
+              />
+              <DemoButton
+                role="nurse"
+                tone="amber"
+                emoji="💉"
+                label="Triage nurse"
+                who="first seeded"
+                surface="/triage"
+              />
+              <DemoButton
+                role="lab_tech"
+                tone="pink"
+                emoji="🧪"
+                label="Lab tech"
+                who="Ramesh Kumar"
+                surface="/lab"
+              />
+              <div className="sm:col-span-2">
+                <DemoButton
+                  role="admin"
+                  tone="ink"
+                  emoji="⚙️"
+                  label="Admin (superuser)"
+                  who="admin@even.in"
+                  surface="/admin"
+                />
+              </div>
+            </div>
+            <p className="mt-3 text-[10px] text-even-ink-400">
+              Each button signs you in as that role&apos;s seeded user
+              and lands on the matching workstation. Real pilot doctors
+              will use the magic link once{' '}
+              <span className="font-mono">notifications.even.in</span>{' '}
+              DNS is verified.
             </p>
           </div>
         )}
 
         <p className="mt-8 text-xs text-even-ink-400">
-          OPD Encounter App · Sprint 0 · M0.4
+          OPD Encounter App · v2 + polish
         </p>
       </div>
     </main>
+  );
+}
+
+/**
+ * Demo-mode role button. Posts to /api/auth/demo-signin?role=<role> if
+ * a role is provided; bare endpoint signs in as V (the default doctor).
+ */
+function DemoButton({
+  role,
+  tone,
+  emoji,
+  label,
+  who,
+  surface,
+}: {
+  role: '' | 'cce' | 'nurse' | 'lab_tech' | 'admin' | 'doctor';
+  tone: 'navy' | 'blue' | 'amber' | 'pink' | 'ink';
+  emoji: string;
+  label: string;
+  who: string;
+  surface: string;
+}) {
+  const toneClass = (() => {
+    switch (tone) {
+      case 'navy':
+        return 'border-even-navy-200 bg-even-navy-50 text-even-navy hover:bg-even-navy-100';
+      case 'blue':
+        return 'border-even-blue-200 bg-even-blue-50 text-even-blue-900 hover:bg-even-blue-100';
+      case 'amber':
+        return 'border-amber-200 bg-amber-50 text-amber-900 hover:bg-amber-100';
+      case 'pink':
+        return 'border-even-pink-200 bg-even-pink-50 text-even-pink-900 hover:bg-even-pink-100';
+      case 'ink':
+      default:
+        return 'border-even-ink-200 bg-even-ink-50 text-even-ink-700 hover:bg-even-ink-100';
+    }
+  })();
+  const action =
+    role === ''
+      ? '/api/auth/demo-signin'
+      : `/api/auth/demo-signin?role=${encodeURIComponent(role)}`;
+  return (
+    <form action={action} method="POST" className="block">
+      <button
+        type="submit"
+        className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left transition ${toneClass}`}
+      >
+        <span aria-hidden className="text-base leading-none">
+          {emoji}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-xs font-semibold uppercase tracking-wider">
+            {label}
+          </span>
+          <span className="block text-[10px] opacity-75">
+            {who} · {surface}
+          </span>
+        </span>
+      </button>
+    </form>
   );
 }
 
