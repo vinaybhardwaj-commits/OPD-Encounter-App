@@ -57,11 +57,26 @@ export type HPSummary = {
   fail_reason?: string | null;
 };
 
+/** Polish #3 — Lab trending. Shape mirrors loadLabTrends() output. */
+export type HPLabTrend = {
+  canonical_key: string;
+  display_name: string;
+  points: Array<{
+    value_numeric: number | null;
+    value_text: string | null;
+    unit: string | null;
+    abnormal_flag: string | null;
+    entered_at: string;
+  }>;
+};
+
 export type HistoryPanelProps = {
   patientId: string;
   patientName: string;
   summary: HPSummary;
   encounters: HPEncounterCard[];
+  /** Polish #3 — series with ≥2 points each, newest-first. */
+  labTrends?: HPLabTrend[];
 };
 
 const LS_KEY = 'ph3.panel_open';
@@ -171,6 +186,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
           />
           <Problems problems={props.summary.problems} />
           <Allergies items={props.summary.allergies} />
+          {props.labTrends && props.labTrends.length > 0 && (
+            <LabTrends trends={props.labTrends} />
+          )}
           <RecentEncounters encounters={props.encounters} />
         </div>
         <PanelFooter
@@ -380,6 +398,107 @@ function Allergies({ items }: { items: HPAllergy[] }) {
       </ul>
     </div>
   );
+}
+
+/**
+ * Polish #3 — Lab trends section. Each canonical_key series shows a
+ * compact inline arrow trail: "13.2 → 12.8 → 12.1 g/dL". The most
+ * recent value gets a colour tint matching its abnormal_flag so the
+ * doctor's eye lands on what's actionable.
+ *
+ * Click to expand a series and see the full point list with timestamps.
+ */
+function LabTrends({ trends }: { trends: HPLabTrend[] }) {
+  return (
+    <div>
+      <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-even-ink-500">
+        Lab trends · {trends.length}
+      </p>
+      <ul className="space-y-1.5">
+        {trends.slice(0, 8).map((s) => (
+          <LabTrendRow key={s.canonical_key} series={s} />
+        ))}
+      </ul>
+      {trends.length > 8 && (
+        <p className="mt-1 text-[10px] text-even-ink-400">
+          + {trends.length - 8} more series available on the patient
+          longitudinal view.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function LabTrendRow({ series }: { series: HPLabTrend }) {
+  const [expanded, setExpanded] = useState(false);
+  // Show the freshest first 4 points inline; expand to see all.
+  const inline = series.points.slice(0, 4);
+  const latest = series.points[0];
+  const latestTint = flagTextTint(latest?.abnormal_flag ?? null);
+  return (
+    <li className="rounded-md border border-even-ink-100 bg-white px-2.5 py-1.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-baseline justify-between gap-2 text-left"
+      >
+        <span className="text-[11px] font-medium text-even-navy">
+          {series.display_name}
+        </span>
+        <span className={`text-[10px] tabular-nums ${latestTint}`}>
+          {inline.map((p, i) => (
+            <span key={i}>
+              {i > 0 && <span className="text-even-ink-300"> → </span>}
+              <span>
+                {p.value_numeric != null ? p.value_numeric : p.value_text ?? '—'}
+              </span>
+            </span>
+          ))}
+          {latest?.unit && (
+            <span className="ml-1 text-even-ink-400">{latest.unit}</span>
+          )}
+        </span>
+      </button>
+      {expanded && (
+        <ul className="mt-1.5 space-y-0.5 border-t border-even-ink-100 pt-1.5 text-[10px] text-even-ink-600">
+          {series.points.map((p, idx) => (
+            <li
+              key={idx}
+              className="flex items-baseline justify-between gap-2"
+            >
+              <span className="tabular-nums">
+                {p.value_numeric != null ? p.value_numeric : p.value_text ?? '—'}
+                {p.unit ? ` ${p.unit}` : ''}
+              </span>
+              <span
+                className={`text-[9px] uppercase tracking-wider ${flagTextTint(p.abnormal_flag)}`}
+              >
+                {p.abnormal_flag && p.abnormal_flag !== 'unknown'
+                  ? p.abnormal_flag.replace(/_/g, ' ')
+                  : ''}
+              </span>
+              <span className="font-mono text-[9px] text-even-ink-400">
+                {new Date(p.entered_at).toLocaleDateString('en-IN', {
+                  day: '2-digit',
+                  month: 'short',
+                  year: '2-digit',
+                })}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function flagTextTint(flag: string | null): string {
+  if (!flag) return 'text-even-navy';
+  if (flag === 'critical_low' || flag === 'critical_high')
+    return 'text-even-pink-800 font-semibold';
+  if (flag === 'high' || flag === 'low') return 'text-amber-700 font-semibold';
+  if (flag === 'normal') return 'text-even-blue-700';
+  return 'text-even-navy';
 }
 
 function RecentEncounters({

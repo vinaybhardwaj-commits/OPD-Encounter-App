@@ -22,6 +22,7 @@ import {
   type HPProblem,
   type HPAllergy,
 } from '@/components/HistoryPanel';
+import { loadLabTrends } from '@/lib/lab-trends';
 
 export const dynamic = 'force-dynamic';
 
@@ -194,6 +195,8 @@ export default async function EncounterPage({
   // + last 5 completed encounters. Cheap, runs in parallel-ish with
   // the prescription fetch (network round-trip dominates).
   const panelData = await loadHistoryPanelData(row.patient_id, id);
+  // Polish #3 — lab trends for the HistoryPanel. Cheap single query.
+  const labTrends = await loadLabTrends(row.patient_id);
   const prescriptionMeta = rx
     ? {
         id: rx.id,
@@ -211,6 +214,7 @@ export default async function EncounterPage({
         patientName={row.patient_name}
         summary={panelData.summary}
         encounters={panelData.encounters}
+        labTrends={labTrends}
       />
       <header className="border-b border-even-ink-100 bg-white">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-6 py-4">
