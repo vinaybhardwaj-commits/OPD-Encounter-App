@@ -42,6 +42,8 @@ type Row = EncounterEditable & {
   triage_completed_at: string | null;
   triage_nurse_name: string | null;
   ddi_findings: unknown | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ddx_findings: any | null;
   // v2.3 handoff fields
   handoff_note: string | null;
   handoff_ack_by: string | null;
@@ -85,6 +87,7 @@ export default async function EncounterPage({
        e.referral_target,
        e.disposition_label_override,
        e.ddi_findings,
+       e.ddx_findings,
        e.handoff_note,
        e.handoff_ack_by,
        e.handoff_ack_at::text AS handoff_ack_at,
@@ -357,6 +360,7 @@ export default async function EncounterPage({
             disposition_label_override: row.disposition_label_override ?? null,
             prescription_lines: prescriptionLines,
             ddi_findings: row.ddi_findings ?? null,
+            ddx_findings: row.ddx_findings ?? null,
           }}
         />
       </section>

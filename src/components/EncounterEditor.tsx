@@ -31,6 +31,7 @@ import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
 import { OrderLabModal } from './OrderLabModal';
 import { SubmitConfirmModal } from './SubmitConfirmModal';
 import { FlagHandoffModal } from './FlagHandoffModal';
+import { DdxOnDemand } from './DdxOnDemand';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -72,6 +73,12 @@ export type EncounterEditable = {
   prescription_lines: PrescriptionLine[];
   /** v2.2.1 — cached Qwen DDI scan output. Banner pre-renders from this. */
   ddi_findings?: unknown | null;
+  /**
+   * v2.2.2 / Polish #1 — cached Qwen DDx output. DdxOnDemand and
+   * SubmitConfirmModal both seed from this.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ddx_findings?: any | null;
   /**
    * v2.3 — per-section last-edited-by map for multi-doctor attribution.
    * Shape: { section_name: { doctor_id, edited_at } }
@@ -397,6 +404,17 @@ export function EncounterEditor({
           className={textareaCls}
         />
       </Section>
+
+      {/* Polish #1 — DDx on-demand button + inline results panel.
+          Mounted above Assessment so the doctor can pull a sanity-check
+          DDx mid-encounter, not just at submit time. */}
+      {!readOnly && (
+        <DdxOnDemand
+          encounterId={initial.id}
+          initialPayload={initial.ddx_findings ?? null}
+          hidden={initial.status === 'completed'}
+        />
+      )}
 
       <Section
         label="Assessment"
