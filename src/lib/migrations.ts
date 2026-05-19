@@ -626,6 +626,34 @@ export const MIGRATIONS: Migration[] = [
           CHECK (abnormal_flag IN ('low','high','critical_low','critical_high','normal','unknown'));
     `,
   },
+  {
+    version: 20,
+    name: 'lab_orders_v212_claim_fields',
+    sql: `
+      -- v2.1.2: soft-claim fields for the /lab workstation.
+      --
+      -- Why "soft": status (pending → in_progress) is already the
+      -- source of truth for actionability. claimed_by_lab_tech_id +
+      -- claimed_at give the OTHER techs a "Claimed by Anjali · 2m ago"
+      -- banner so they don't double-handle, but a teammate CAN still
+      -- open the row and take over if Anjali walks away.
+      --
+      -- Auto-release isn't in this migration — that's a v2.1.x polish
+      -- decision (locked as deferred). For now release is manual or
+      -- happens implicitly on status flips that move the row past
+      -- in_progress.
+      ALTER TABLE lab_orders
+        ADD COLUMN IF NOT EXISTS claimed_by_lab_tech_id UUID
+          REFERENCES doctors(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+
+      -- Partial index for "currently claimed" lookups — useful when the
+      -- inbox splits "in progress (mine)" from "in progress (others)".
+      CREATE INDEX IF NOT EXISTS idx_lab_orders_claimed
+        ON lab_orders(claimed_by_lab_tech_id)
+        WHERE claimed_by_lab_tech_id IS NOT NULL;
+    `,
+  },
 ];
 
 /**
