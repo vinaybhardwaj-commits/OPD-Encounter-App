@@ -84,7 +84,10 @@ export function PdfUploadAndExtract({
     initialItems && initialItems.length > 0 ? 'reviewing' : 'idle',
   );
   const [items, setItems] = useState<ExtractedLabItem[]>(initialItems ?? []);
-  const [confidence, setConfidence] = useState<number>(initialConfidence ?? 0);
+  // pg NUMERIC deserialises as a string; coerce defensively.
+  const [confidence, setConfidence] = useState<number>(
+    initialConfidence != null ? Number(initialConfidence) : 0,
+  );
   const [blobUrl, setBlobUrl] = useState<string | null>(initialBlobUrl ?? null);
   const [autoEligible, setAutoEligible] = useState<boolean>(
     (initialConfidence ?? 0) >= 0.9 && (initialItems?.length ?? 0) > 0,

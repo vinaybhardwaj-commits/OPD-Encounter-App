@@ -198,7 +198,7 @@ export default async function LabOrderPage({
               label="Extraction confidence"
               value={
                 order.extraction_confidence != null
-                  ? order.extraction_confidence.toFixed(2)
+                  ? Number(order.extraction_confidence).toFixed(2)
                   : '—'
               }
             />
