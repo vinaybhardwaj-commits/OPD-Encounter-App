@@ -18,7 +18,9 @@
  * Read-only by design. Editing a posted result needs a clinician
  * override flow which lands in v2.2+.
  */
+import { Fragment } from 'react';
 import { pool } from '@/lib/db';
+import { AnnotateResultButton } from './AnnotateResultButton';
 
 type LabOrder = {
   id: string;
@@ -48,6 +50,14 @@ type LabResult = {
   abnormal_flag: string | null;
   confidence_score: number | null;
   entered_at: string;
+};
+
+type Annotation = {
+  id: string;
+  lab_result_id: string;
+  doctor_name: string;
+  note: string;
+  created_at: string;
 };
 
 export async function EncounterLabResults({
@@ -95,6 +105,28 @@ export async function EncounterLabResults({
     byOrder.get(r.lab_order_id)!.push(r);
   }
 
+  // Polish #4 — Pull annotations for these results. One query, grouped
+  // client-side by lab_result_id.
+  const resultIds = results.map((r) => r.id);
+  let annotationsByResult = new Map<string, Annotation[]>();
+  if (resultIds.length > 0) {
+    const { rows: annRows } = await pool.query<Annotation>(
+      `SELECT a.id, a.lab_result_id, d.name AS doctor_name, a.note,
+              a.created_at::text AS created_at
+       FROM lab_result_annotations a
+       JOIN doctors d ON d.id = a.doctor_id
+       WHERE a.lab_result_id = ANY($1::uuid[])
+       ORDER BY a.created_at ASC`,
+      [resultIds],
+    );
+    for (const a of annRows) {
+      if (!annotationsByResult.has(a.lab_result_id)) {
+        annotationsByResult.set(a.lab_result_id, []);
+      }
+      annotationsByResult.get(a.lab_result_id)!.push(a);
+    }
+  }
+
   // Aggregate abnormal flag count for the section header.
   const allResults = results;
   const abnormalCount = allResults.filter(
@@ -139,7 +171,11 @@ export async function EncounterLabResults({
       <ul className="divide-y divide-even-ink-100">
         {orders.map((o) => (
           <li key={o.id} className="px-5 py-3">
-            <OrderCard order={o} results={byOrder.get(o.id) ?? []} />
+            <OrderCard
+              order={o}
+              results={byOrder.get(o.id) ?? []}
+              annotationsByResult={annotationsByResult}
+            />
           </li>
         ))}
       </ul>
@@ -152,9 +188,11 @@ export async function EncounterLabResults({
 function OrderCard({
   order,
   results,
+  annotationsByResult,
 }: {
   order: LabOrder;
   results: LabResult[];
+  annotationsByResult: Map<string, Annotation[]>;
 }) {
   const isCancelled = order.status === 'cancelled';
   return (
@@ -194,6 +232,7 @@ function OrderCard({
             postedByName={order.posted_by_tech_name}
             resultedAt={order.resulted_at}
             sourcePdfUrl={order.source_pdf_url}
+            annotationsByResult={annotationsByResult}
           />
         )}
         {order.status === 'resulted' && results.length === 0 && (
@@ -241,11 +280,13 @@ function ResultsTable({
   postedByName,
   resultedAt,
   sourcePdfUrl,
+  annotationsByResult,
 }: {
   results: LabResult[];
   postedByName: string | null;
   resultedAt: string | null;
   sourcePdfUrl: string | null;
+  annotationsByResult: Map<string, Annotation[]>;
 }) {
   return (
     <div className="overflow-hidden rounded-lg border border-even-ink-200">
@@ -270,28 +311,58 @@ function ResultsTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-even-ink-100">
-          {results.map((r) => (
-            <tr key={r.id} className={flagRowTint(r.abnormal_flag)}>
-              <td className="px-2.5 py-1.5 text-even-navy">
-                {r.display_name}
-                <div className="font-mono text-[9px] text-even-ink-400">
-                  {r.canonical_key}
-                </div>
-              </td>
-              <td className="px-2.5 py-1.5 text-right tabular-nums font-semibold text-even-navy">
-                {r.value_numeric != null ? r.value_numeric : r.value_text ?? '—'}
-              </td>
-              <td className="px-2.5 py-1.5 text-even-ink-600">
-                {r.unit ?? '—'}
-              </td>
-              <td className="px-2.5 py-1.5 text-even-ink-600">
-                {r.reference_range ?? '—'}
-              </td>
-              <td className="px-2.5 py-1.5 text-right">
-                <FlagPill flag={r.abnormal_flag ?? 'unknown'} />
-              </td>
-            </tr>
-          ))}
+          {results.map((r) => {
+            const anns = annotationsByResult.get(r.id) ?? [];
+            return (
+              <Fragment key={r.id}>
+                <tr className={flagRowTint(r.abnormal_flag)}>
+                  <td className="px-2.5 py-1.5 text-even-navy">
+                    {r.display_name}
+                    <div className="font-mono text-[9px] text-even-ink-400">
+                      {r.canonical_key}
+                    </div>
+                  </td>
+                  <td className="px-2.5 py-1.5 text-right tabular-nums font-semibold text-even-navy">
+                    {r.value_numeric != null ? r.value_numeric : r.value_text ?? '—'}
+                  </td>
+                  <td className="px-2.5 py-1.5 text-even-ink-600">
+                    {r.unit ?? '—'}
+                  </td>
+                  <td className="px-2.5 py-1.5 text-even-ink-600">
+                    {r.reference_range ?? '—'}
+                  </td>
+                  <td className="px-2.5 py-1.5 text-right">
+                    <FlagPill flag={r.abnormal_flag ?? 'unknown'} />
+                  </td>
+                </tr>
+                <tr className="bg-white/50">
+                  <td colSpan={5} className="px-2.5 pb-2 pt-0">
+                    {anns.length > 0 && (
+                      <ul className="space-y-0.5 border-l-2 border-amber-300 pl-2">
+                        {anns.map((a) => (
+                          <li
+                            key={a.id}
+                            className="text-[10px] text-amber-900"
+                          >
+                            <span className="font-semibold">
+                              {firstName(a.doctor_name)}
+                            </span>{' '}
+                            <span className="text-amber-700">
+                              · {new Date(a.created_at).toLocaleString('en-IN')}
+                            </span>
+                            <div className="text-even-ink-700">{a.note}</div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="mt-1">
+                      <AnnotateResultButton labResultId={r.id} />
+                    </div>
+                  </td>
+                </tr>
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
       <div className="flex items-center justify-between border-t border-even-ink-100 bg-even-ink-50/60 px-2.5 py-1.5 text-[10px] text-even-ink-500">

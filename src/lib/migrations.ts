@@ -747,6 +747,27 @@ export const MIGRATIONS: Migration[] = [
       WHERE contributors_json = '[]'::jsonb;
     `,
   },
+  {
+    version: 24,
+    name: 'lab_result_annotations',
+    sql: `
+      -- Polish #4 — Clinician annotations on posted lab results.
+      --
+      -- Append-only. The original lab_results row is NEVER edited
+      -- (PRD lock: 'add an annotation, never edit the original').
+      -- Annotations render inline beneath the value and stay in the
+      -- audit trail forever.
+      CREATE TABLE IF NOT EXISTS lab_result_annotations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        lab_result_id UUID NOT NULL REFERENCES lab_results(id) ON DELETE CASCADE,
+        doctor_id UUID NOT NULL REFERENCES doctors(id),
+        note TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_lab_result_annotations_result
+        ON lab_result_annotations(lab_result_id, created_at DESC);
+    `,
+  },
 ];
 
 /**
