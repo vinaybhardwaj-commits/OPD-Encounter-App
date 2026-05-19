@@ -108,14 +108,27 @@ const AI_EMPTY: EncounterAi = {
   disposition_additions: [],
 };
 
+/**
+ * v2.1.5 — labSummary feeds the ResumeBanner so the doctor sees at a
+ * glance what came back from the lab. Server-computed once on the
+ * encounter page from lab_results aggregates.
+ */
+export type LabReturnSummary = {
+  posted_count: number;
+  abnormal_count: number;
+  critical_count: number;
+};
+
 export function EncounterEditor({
   initial,
   patient,
   ai,
+  labSummary,
 }: {
   initial: EncounterEditable;
   patient: EncounterPatient;
   ai?: EncounterAi;
+  labSummary?: LabReturnSummary | null;
 }) {
   const aiSafe: EncounterAi = ai ?? AI_EMPTY;
   const router = useRouter();
@@ -273,6 +286,7 @@ export function EncounterEditor({
         <ResumeBanner
           encounterId={initial.id}
           test={initial.pending_diagnostic_test}
+          labSummary={labSummary ?? null}
         />
       )}
 
@@ -710,9 +724,11 @@ function Section({
 function ResumeBanner({
   encounterId,
   test,
+  labSummary,
 }: {
   encounterId: string;
   test: string | null;
+  labSummary: LabReturnSummary | null;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -739,6 +755,10 @@ function ResumeBanner({
     }
   }
 
+  // v2.1.5 — prefer the structured lab summary copy when available;
+  // fall back to the v1 generic diagnostic line otherwise.
+  const hasLabs = labSummary && labSummary.posted_count > 0;
+
   return (
     <div className="rounded-lg border border-even-blue-200 bg-even-blue-50 p-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -746,12 +766,39 @@ function ResumeBanner({
           <p className="text-xs font-semibold uppercase tracking-wider text-even-blue-700">
             Ready to resume
           </p>
-          <p className="mt-0.5 text-xs text-even-navy">
-            Diagnostic{' '}
-            <span className="font-medium">{test ?? 'result'}</span> available in
-            Pulse. Read the result, then continue with assessment, prescription,
-            and disposition.
-          </p>
+          {hasLabs ? (
+            <p className="mt-0.5 text-xs text-even-navy">
+              <span className="font-medium">
+                {labSummary!.posted_count} lab result
+                {labSummary!.posted_count === 1 ? '' : 's'} back
+              </span>
+              {labSummary!.critical_count > 0 && (
+                <>
+                  {' · '}
+                  <span className="font-semibold text-even-pink-800">
+                    {labSummary!.critical_count} critical
+                  </span>
+                </>
+              )}
+              {labSummary!.abnormal_count > 0 && (
+                <>
+                  {' · '}
+                  <span className="font-medium text-amber-700">
+                    {labSummary!.abnormal_count} abnormal
+                  </span>
+                </>
+              )}
+              . Review the results below, then continue with assessment,
+              prescription, and disposition.
+            </p>
+          ) : (
+            <p className="mt-0.5 text-xs text-even-navy">
+              Diagnostic{' '}
+              <span className="font-medium">{test ?? 'result'}</span> available in
+              Pulse. Read the result, then continue with assessment, prescription,
+              and disposition.
+            </p>
+          )}
           {error && (
             <p className="mt-2 text-[11px] text-even-pink-700">{error}</p>
           )}

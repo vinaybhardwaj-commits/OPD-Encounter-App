@@ -11,6 +11,7 @@ import { notFound, redirect } from 'next/navigation';
 import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
 import { EncounterEditor, type EncounterEditable } from '@/components/EncounterEditor';
+import { EncounterLabResults } from '@/components/EncounterLabResults';
 import type { PrescriptionLine } from '@/components/DrugRow';
 import {
   HistoryPanel,
@@ -105,6 +106,34 @@ export default async function EncounterPage({
   );
   const rx = rxRows[0];
   const prescriptionLines: PrescriptionLine[] = rx?.lines ?? [];
+
+  // v2.1.5 — lightweight lab summary for the ResumeBanner. One COUNT
+  // query feeds posted/abnormal/critical so the banner can give the
+  // doctor a one-line read on what came back.
+  const { rows: labSumRows } = await pool.query<{
+    posted: string;
+    abnormal: string;
+    critical: string;
+  }>(
+    `SELECT
+       COUNT(*)::text AS posted,
+       COUNT(*) FILTER (
+         WHERE abnormal_flag IS NOT NULL
+           AND abnormal_flag NOT IN ('normal','unknown')
+       )::text AS abnormal,
+       COUNT(*) FILTER (
+         WHERE abnormal_flag IN ('critical_low','critical_high')
+       )::text AS critical
+     FROM lab_results lr
+     JOIN lab_orders lo ON lo.id = lr.lab_order_id
+     WHERE lo.encounter_id = $1`,
+    [id],
+  );
+  const labSummary = {
+    posted_count: Number(labSumRows[0]?.posted ?? 0),
+    abnormal_count: Number(labSumRows[0]?.abnormal ?? 0),
+    critical_count: Number(labSumRows[0]?.critical ?? 0),
+  };
 
   // Load patient history for the PH.3 left panel — cached Qwen summary
   // + last 5 completed encounters. Cheap, runs in parallel-ish with
@@ -220,6 +249,13 @@ export default async function EncounterPage({
           )}
         </div>
 
+        {/* v2.1.5 — doctor-side lab orders + results panel. Renders only
+            when the encounter has any lab orders; sits above the
+            EncounterEditor so abnormal flags are unmissable. */}
+        <div className="mb-6">
+          <EncounterLabResults encounterId={row.id} />
+        </div>
+
         <EncounterEditor
           patient={{
             name: row.patient_name,
@@ -229,6 +265,7 @@ export default async function EncounterPage({
             phone_e164: row.patient_phone_e164,
           }}
           ai={panelData.ai}
+          labSummary={labSummary}
           initial={{
             id: row.id,
             encounter_number: row.encounter_number,
