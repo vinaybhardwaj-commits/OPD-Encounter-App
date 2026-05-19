@@ -42,6 +42,7 @@
  */
 import { NextResponse } from 'next/server';
 import { put } from '@vercel/blob';
+import sharp from 'sharp';
 import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { notifyQueue } from '@/lib/queueNotify';
@@ -178,7 +179,27 @@ export async function POST(
     );
   }
 
-  // 2. Run Qwen-VL extraction across pages.
+  // 2a. Polish #5 — Resize each rendered page to max 1024px longest
+  //     edge + re-encode as JPEG 85 BEFORE forwarding to Qwen-VL.
+  //     Saves ~70% payload + Qwen latency per page. Per the Vision-LLM
+  //     guide §7.1. If sharp throws (malformed PNG, etc.), fall back
+  //     to the original base64.
+  const resizedB64s: string[] = await Promise.all(
+    pageB64s.map(async (b64) => {
+      try {
+        const inputBuf = Buffer.from(b64, 'base64');
+        const outBuf = await sharp(inputBuf)
+          .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 85 })
+          .toBuffer();
+        return outBuf.toString('base64');
+      } catch {
+        return b64;
+      }
+    }),
+  );
+
+  // 2b. Run Qwen-VL extraction across pages.
   let items: ExtractedLabItem[] = [];
   let overall_confidence = 0;
   let extraction_raw: unknown = null;
@@ -186,7 +207,7 @@ export async function POST(
 
   try {
     const perPage = await Promise.all(
-      pageB64s.map((b64) => extractLabPage(b64)),
+      resizedB64s.map((b64) => extractLabPage(b64, { mimeType: 'image/jpeg' })),
     );
     items = perPage.flatMap((p) => p.items);
     overall_confidence =
