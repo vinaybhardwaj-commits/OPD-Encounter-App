@@ -291,6 +291,13 @@ function OrderCard({
   const isStale =
     order.ordered_date_iso !== todayIso() &&
     (order.status === 'pending' || order.status === 'in_progress');
+  // Polish #2 — flag claims older than 7m so the tech notices BEFORE
+  // the 10m auto-release sweep fires.
+  const claimedMin = order.claimed_at
+    ? Math.floor((Date.now() - new Date(order.claimed_at).getTime()) / 60000)
+    : 0;
+  const claimNearAutoRelease =
+    order.status === 'in_progress' && claimedMin >= 7;
 
   return (
     <li
@@ -342,6 +349,11 @@ function OrderCard({
             >
               {isMine ? '✓ You claimed this' : `Claimed by ${firstName(order.claimed_by_lab_tech_name)}`}
               {claimedAgo && ` · ${claimedAgo}`}
+              {claimNearAutoRelease && (
+                <span className="ml-2 inline-block rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-amber-900">
+                  Stale · auto-release in {Math.max(0, 10 - claimedMin)}m
+                </span>
+              )}
             </p>
           )}
         </div>
