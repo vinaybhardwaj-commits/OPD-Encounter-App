@@ -50,6 +50,7 @@ export function Icd10Typeahead({
   const [qwenLoading, setQwenLoading] = useState(false);
   const [qwenSuggestions, setQwenSuggestions] = useState<QwenSuggestion[] | null>(null);
   const [qwenLatencyMs, setQwenLatencyMs] = useState<number | null>(null);
+  const [qwenError, setQwenError] = useState<string | null>(null);
 
   const listboxId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -116,27 +117,46 @@ export function Icd10Typeahead({
     if (!encounterId || query.trim().length < 2 || qwenLoading) return;
     setQwenLoading(true);
     setQwenSuggestions(null);
+    setQwenError(null);
+    console.log('[Icd10 Qwen] submitting', { free_text: query.trim(), encounter_id: encounterId });
     try {
       const res = await fetch('/api/icd10/interpret', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ free_text: query.trim(), encounter_id: encounterId }),
+        credentials: 'same-origin',
       });
-      const json = await res.json();
-      if (json.ok && Array.isArray(json.suggestions)) {
+      const text = await res.text();
+      let json: { ok?: boolean; suggestions?: QwenSuggestion[]; latency_ms?: number; error?: string };
+      try { json = JSON.parse(text); }
+      catch { json = { ok: false, error: 'non-json response: ' + text.slice(0, 100) }; }
+      console.log('[Icd10 Qwen] response', { status: res.status, ok: json.ok, count: json.suggestions?.length, error: json.error });
+      if (!res.ok) {
+        setQwenError(`Server returned ${res.status}: ${json.error ?? 'unknown'}`);
+      } else if (!json.ok) {
+        setQwenError(`Qwen error: ${json.error ?? 'unknown'}`);
+      } else if (!Array.isArray(json.suggestions)) {
+        setQwenError('Bad response shape — no suggestions array');
+      } else {
         setQwenSuggestions(json.suggestions);
         setQwenLatencyMs(json.latency_ms ?? null);
       }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[Icd10 Qwen] fetch failed', msg);
+      setQwenError(`Network error: ${msg}`);
     } finally {
       setQwenLoading(false);
     }
   }, [encounterId, query, qwenLoading]);
 
   const pickQwen = useCallback((s: QwenSuggestion) => {
+    console.log('[Icd10 Qwen] picked', s);
     onSelect({ code: s.code, label: s.label });
     setQuery('');
     setResults([]);
     setQwenSuggestions(null);
+    setQwenError(null);
     close();
     inputRef.current?.focus();
   }, [onSelect, close]);
@@ -314,6 +334,12 @@ export function Icd10Typeahead({
       {encounterId && !qwenLoading && qwenSuggestions && qwenSuggestions.length === 0 && (
         <div className="mt-2 text-[11px] italic text-even-ink-400">
           Qwen couldn&apos;t map &quot;{query}&quot; to an ICD-10 code.
+        </div>
+      )}
+
+      {encounterId && qwenError && (
+        <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-700">
+          {qwenError}
         </div>
       )}
     </div>

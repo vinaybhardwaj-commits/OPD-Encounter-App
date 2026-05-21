@@ -27,24 +27,40 @@ export function ExtractIcd10FromAssessmentButton({
   const [loading, setLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
   const extract = async () => {
     if (assessmentText.trim().length < 3) return;
     setLoading(true);
     setSuggestions(null);
+    setErr(null);
+    console.log('[Extract ICD-10] submitting', { encounter_id: encounterId, len: assessmentText.trim().length });
     try {
       const res = await fetch('/api/icd10/interpret', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ free_text: assessmentText.trim(), encounter_id: encounterId }),
+        credentials: 'same-origin',
       });
-      const json = await res.json();
-      if (json.ok && Array.isArray(json.suggestions)) {
+      const text = await res.text();
+      let json: { ok?: boolean; suggestions?: Suggestion[]; latency_ms?: number; error?: string };
+      try { json = JSON.parse(text); }
+      catch { json = { ok: false, error: 'non-json response: ' + text.slice(0, 100) }; }
+      console.log('[Extract ICD-10] response', { status: res.status, ok: json.ok, count: json.suggestions?.length, error: json.error });
+      if (!res.ok) {
+        setErr(`Server returned ${res.status}: ${json.error ?? 'unknown'}`);
+      } else if (!json.ok) {
+        setErr(`Qwen error: ${json.error ?? 'unknown'}`);
+      } else if (!Array.isArray(json.suggestions)) {
+        setErr('Bad response shape — no suggestions array');
+      } else {
         setSuggestions(json.suggestions);
         setLatencyMs(json.latency_ms ?? null);
-      } else {
-        setSuggestions([]);
       }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[Extract ICD-10] fetch failed', msg);
+      setErr(`Network error: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -103,6 +119,12 @@ export function ExtractIcd10FromAssessmentButton({
       {suggestions && suggestions.length === 0 && !loading && (
         <div className="text-[11px] italic text-even-ink-400">
           Qwen couldn&apos;t extract codes from this assessment. Try writing more, or add via the search above.
+        </div>
+      )}
+
+      {err && (
+        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-700">
+          {err}
         </div>
       )}
     </div>
