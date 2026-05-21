@@ -281,6 +281,7 @@ export function DiagnosticsQuickAddStrip({
               onAdd={add}
               cartCodes={cartCodes}
               autoFocus
+              encounterId={encounterId}
             />
             <div className="mt-3 flex items-center justify-between text-[11px] text-even-ink-500">
               <span>Type to search the EHRC catalog (2,334 tests).</span>
