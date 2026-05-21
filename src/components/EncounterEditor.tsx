@@ -32,6 +32,7 @@ import { OrderLabModal } from './OrderLabModal';
 import { SubmitConfirmModal } from './SubmitConfirmModal';
 import { FlagHandoffModal } from './FlagHandoffModal';
 import { DdxOnDemand } from './DdxOnDemand';
+import { DiagnosticsQuickAddStrip } from './DiagnosticsQuickAddStrip';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -415,6 +416,16 @@ export function EncounterEditor({
           hidden={initial.status === 'completed'}
         />
       )}
+
+      {/* v3.2a — Diagnostics inline quick-add strip (Add-a-drug-style).
+          Sits between DDx and Assessment because diagnostics confirm
+          the differential. Writes to the new diagnostic_orders table;
+          lab tech inbox cutover ships in v3.0b. v3.5a adds passive
+          Qwen context chips; v3.5b adds Qwen-NLP free-text suggest. */}
+      <DiagnosticsQuickAddStrip
+        encounterId={initial.id}
+        readOnly={readOnly || initial.status === 'completed'}
+      />
 
       <Section
         label="Assessment"
