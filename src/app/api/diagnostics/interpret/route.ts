@@ -103,11 +103,11 @@ export async function POST(req: Request) {
   const enc = encRes.rows[0];
   const visitReason = (enc.intake_visit_reason || enc.chief_complaint_text || '').trim();
 
-  const problemsRes = await pool.query<{ summary_payload: { problems?: string[] } | null }>(
-    `SELECT summary_payload FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
+  const problemsRes = await pool.query<{ summary: { problems?: string[] } | null }>(
+    `SELECT summary FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
     [enc.patient_id],
   );
-  const problems = problemsRes.rows[0]?.summary_payload?.problems ?? [];
+  const problems = problemsRes.rows[0]?.summary?.problems ?? [];
 
   // Build allowed_catalog scored by free_text keywords (primary) + visit_reason keywords (secondary)
   const freeTextKw = freeText.toLowerCase().split(/\W+/).filter((w) => w.length >= 2);

@@ -92,8 +92,8 @@ export async function GET(
     const assessment = (enc.assessment_text || '').trim();
   
     const [problemsRes, recentRes] = await Promise.all([
-      pool.query<{ summary_payload: { problems?: string[] } | null }>(
-        `SELECT summary_payload FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
+      pool.query<{ summary: { problems?: string[] } | null }>(
+        `SELECT summary FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
         [enc.patient_id],
       ),
       pool.query<{ encounter_date: string; chief_complaint_text: string | null; assessment_text: string | null }>(
@@ -104,7 +104,7 @@ export async function GET(
         [enc.patient_id, encounterId],
       ),
     ]);
-    const problems = problemsRes.rows[0]?.summary_payload?.problems ?? [];
+    const problems = problemsRes.rows[0]?.summary?.problems ?? [];
   
     const contextHash = createHash('sha256')
       .update(JSON.stringify({ visitReason, problems, assessment, recentCount: recentRes.rows.length }))

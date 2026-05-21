@@ -100,8 +100,8 @@ export async function GET(
 
   // 2. Load active problems + last 5 encounters
   const [problemsRes, recentRes] = await Promise.all([
-    pool.query<{ summary_payload: { problems?: string[]; medications?: string[] } | null }>(
-      `SELECT summary_payload FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
+    pool.query<{ summary: { problems?: string[]; medications?: string[] } | null }>(
+      `SELECT summary FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
       [enc.patient_id],
     ),
     pool.query<{ id: string; encounter_date: string; chief_complaint_text: string | null; impression: string | null }>(
@@ -112,7 +112,7 @@ export async function GET(
       [enc.patient_id, encounterId],
     ),
   ]);
-  const problems = problemsRes.rows[0]?.summary_payload?.problems ?? [];
+  const problems = problemsRes.rows[0]?.summary?.problems ?? [];
   const recentEncs = recentRes.rows;
 
   // 3. Hash + cache check
