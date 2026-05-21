@@ -58,116 +58,123 @@ export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const headerSecret = req.headers.get('x-migration-secret');
-  const expectedSecret = process.env.MIGRATION_SECRET;
-  let authed = !!expectedSecret && headerSecret === expectedSecret;
-  if (!authed) {
-    const session = await getCurrentUser();
-    if (session) authed = true;
-  }
-  if (!authed) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
-
-  const { id: encounterId } = await ctx.params;
-
-  const encRes = await pool.query<{
-    id: string;
-    patient_id: string;
-    intake_visit_reason: string | null;
-    chief_complaint_text: string | null;
-    assessment: string | null;
-    ai_suggested_icd10: CachedPayload | null;
-    ai_suggested_icd10_context_hash: string | null;
-  }>(
-    `SELECT id, patient_id, intake_visit_reason, chief_complaint_text,
-            assessment, ai_suggested_icd10, ai_suggested_icd10_context_hash
-     FROM encounters WHERE id = $1 LIMIT 1`,
-    [encounterId],
-  );
-  if (encRes.rows.length === 0) {
-    return NextResponse.json({ ok: false, error: 'encounter_not_found' }, { status: 404 });
-  }
-  const enc = encRes.rows[0];
-  const visitReason = (enc.intake_visit_reason || enc.chief_complaint_text || '').trim();
-  const assessment = (enc.assessment || '').trim();
-
-  const [problemsRes, recentRes] = await Promise.all([
-    pool.query<{ summary_payload: { problems?: string[] } | null }>(
-      `SELECT summary_payload FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
-      [enc.patient_id],
-    ),
-    pool.query<{ encounter_date: string; chief_complaint_text: string | null; assessment: string | null }>(
-      `SELECT encounter_date::text, chief_complaint_text, assessment
-       FROM encounters
-       WHERE patient_id = $1 AND id != $2 AND status='completed'
-       ORDER BY encounter_date DESC LIMIT 5`,
-      [enc.patient_id, encounterId],
-    ),
-  ]);
-  const problems = problemsRes.rows[0]?.summary_payload?.problems ?? [];
-
-  const contextHash = createHash('sha256')
-    .update(JSON.stringify({ visitReason, problems, assessment, recentCount: recentRes.rows.length }))
-    .digest('hex')
-    .slice(0, 24);
-
-  if (enc.ai_suggested_icd10_context_hash === contextHash && enc.ai_suggested_icd10) {
-    return NextResponse.json({ ok: true, cached: true, payload: enc.ai_suggested_icd10 });
-  }
-
-  const userMessage = JSON.stringify({
-    visit_reason: visitReason || '(none)',
-    active_problems: problems,
-    draft_assessment: assessment || '(none yet)',
-    recent_encounters: recentRes.rows.map((r) => ({
-      date: r.encounter_date,
-      cc: (r.chief_complaint_text || '').slice(0, 100),
-      assessment: (r.assessment || '').slice(0, 200),
-    })),
-  });
-
-  let payload: CachedPayload;
   try {
-    const t0 = Date.now();
-    const result = await qwenJson<{ findings: Array<{ code: string; label: string; rationale: string; confidence: number }> }>(
-      SYSTEM_PROMPT,
-      userMessage,
-      { timeoutMs: 60_000 },
+  const headerSecret = req.headers.get('x-migration-secret');
+    const expectedSecret = process.env.MIGRATION_SECRET;
+    let authed = !!expectedSecret && headerSecret === expectedSecret;
+    if (!authed) {
+      const session = await getCurrentUser();
+      if (session) authed = true;
+    }
+    if (!authed) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  
+    const { id: encounterId } = await ctx.params;
+  
+    const encRes = await pool.query<{
+      id: string;
+      patient_id: string;
+      intake_visit_reason: string | null;
+      chief_complaint_text: string | null;
+      assessment_text: string | null;
+      ai_suggested_icd10: CachedPayload | null;
+      ai_suggested_icd10_context_hash: string | null;
+    }>(
+      `SELECT id, patient_id, intake_visit_reason, chief_complaint_text,
+              assessment_text, ai_suggested_icd10, ai_suggested_icd10_context_hash
+       FROM encounters WHERE id = $1 LIMIT 1`,
+      [encounterId],
     );
-    const latency_ms = Date.now() - t0;
-
-    const clean: Suggestion[] = (result.json.findings ?? [])
-      .filter((f) => f.code && ICD10_REGEX.test(f.code.trim().toUpperCase()))
-      .slice(0, 6)
-      .map((f) => ({
-        code: f.code.trim().toUpperCase(),
-        label: (f.label ?? '').slice(0, 200) || f.code,
-        rationale: (f.rationale ?? '').slice(0, 120),
-        confidence: Math.max(0, Math.min(1, Number(f.confidence) || 0.5)),
-      }));
-
-    payload = {
-      status: 'ok',
-      findings: clean,
-      generated_at: new Date().toISOString(),
-      latency_ms,
-    };
+    if (encRes.rows.length === 0) {
+      return NextResponse.json({ ok: false, error: 'encounter_not_found' }, { status: 404 });
+    }
+    const enc = encRes.rows[0];
+    const visitReason = (enc.intake_visit_reason || enc.chief_complaint_text || '').trim();
+    const assessment = (enc.assessment_text || '').trim();
+  
+    const [problemsRes, recentRes] = await Promise.all([
+      pool.query<{ summary_payload: { problems?: string[] } | null }>(
+        `SELECT summary_payload FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
+        [enc.patient_id],
+      ),
+      pool.query<{ encounter_date: string; chief_complaint_text: string | null; assessment_text: string | null }>(
+        `SELECT encounter_date::text, chief_complaint_text, assessment_text
+         FROM encounters
+         WHERE patient_id = $1 AND id != $2 AND status='completed'
+         ORDER BY encounter_date DESC LIMIT 5`,
+        [enc.patient_id, encounterId],
+      ),
+    ]);
+    const problems = problemsRes.rows[0]?.summary_payload?.problems ?? [];
+  
+    const contextHash = createHash('sha256')
+      .update(JSON.stringify({ visitReason, problems, assessment, recentCount: recentRes.rows.length }))
+      .digest('hex')
+      .slice(0, 24);
+  
+    if (enc.ai_suggested_icd10_context_hash === contextHash && enc.ai_suggested_icd10) {
+      return NextResponse.json({ ok: true, cached: true, payload: enc.ai_suggested_icd10 });
+    }
+  
+    const userMessage = JSON.stringify({
+      visit_reason: visitReason || '(none)',
+      active_problems: problems,
+      draft_assessment: assessment || '(none yet)',
+      recent_encounters: recentRes.rows.map((r) => ({
+        date: r.encounter_date,
+        cc: (r.chief_complaint_text || '').slice(0, 100),
+        assessment: (r.assessment_text || '').slice(0, 200),
+      })),
+    });
+  
+    let payload: CachedPayload;
+    try {
+      const t0 = Date.now();
+      const result = await qwenJson<{ findings: Array<{ code: string; label: string; rationale: string; confidence: number }> }>(
+        SYSTEM_PROMPT,
+        userMessage,
+        { timeoutMs: 60_000 },
+      );
+      const latency_ms = Date.now() - t0;
+  
+      const clean: Suggestion[] = (result.json.findings ?? [])
+        .filter((f) => f.code && ICD10_REGEX.test(f.code.trim().toUpperCase()))
+        .slice(0, 6)
+        .map((f) => ({
+          code: f.code.trim().toUpperCase(),
+          label: (f.label ?? '').slice(0, 200) || f.code,
+          rationale: (f.rationale ?? '').slice(0, 120),
+          confidence: Math.max(0, Math.min(1, Number(f.confidence) || 0.5)),
+        }));
+  
+      payload = {
+        status: 'ok',
+        findings: clean,
+        generated_at: new Date().toISOString(),
+        latency_ms,
+      };
+    } catch (e) {
+      const msg = e instanceof QwenError ? `Qwen ${e.kind}` : e instanceof Error ? e.message : String(e);
+      payload = {
+        status: 'failed',
+        error: msg.slice(0, 200),
+        generated_at: new Date().toISOString(),
+      };
+    }
+  
+    await pool.query(
+      `UPDATE encounters
+       SET ai_suggested_icd10 = $2::jsonb,
+           ai_suggested_icd10_generated_at = NOW(),
+           ai_suggested_icd10_context_hash = $3
+       WHERE id = $1`,
+      [encounterId, JSON.stringify(payload), contextHash],
+    );
+  
+    return NextResponse.json({ ok: true, cached: false, payload });
   } catch (e) {
-    const msg = e instanceof QwenError ? `Qwen ${e.kind}` : e instanceof Error ? e.message : String(e);
-    payload = {
-      status: 'failed',
-      error: msg.slice(0, 200),
-      generated_at: new Date().toISOString(),
-    };
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[icd10-suggest] uncaught", msg);
+    return NextResponse.json({ ok: false, error: "server_error", detail: msg.slice(0, 300) }, { status: 500 });
   }
 
-  await pool.query(
-    `UPDATE encounters
-     SET ai_suggested_icd10 = $2::jsonb,
-         ai_suggested_icd10_generated_at = NOW(),
-         ai_suggested_icd10_context_hash = $3
-     WHERE id = $1`,
-    [encounterId, JSON.stringify(payload), contextHash],
-  );
-
-  return NextResponse.json({ ok: true, cached: false, payload });
 }

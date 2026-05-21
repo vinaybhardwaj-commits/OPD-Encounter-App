@@ -60,79 +60,85 @@ Rules:
 Return ONLY the JSON object. No markdown, no prose, no preamble.`;
 
 export async function POST(req: Request) {
-  // Auth — session OR migration secret (the secret path is for debug curl).
-  const headerSecret = req.headers.get('x-migration-secret');
-  const expectedSecret = process.env.MIGRATION_SECRET;
-  let authed = !!expectedSecret && headerSecret === expectedSecret;
-  if (!authed) {
-    const session = await getCurrentUser();
-    if (session) authed = true;
-  }
-  if (!authed) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
-
-  const body = (await req.json()) as { free_text?: string; encounter_id?: string };
-  const freeText = (body.free_text ?? '').trim();
-  if (freeText.length < 2) {
-    return NextResponse.json({ ok: true, suggestions: [], note: 'too_short' });
-  }
-
-  // Optional encounter context (improves disambiguation but not required)
-  let visitReason = '';
-  let problems: string[] = [];
-  if (body.encounter_id && /^[0-9a-f-]{36}$/i.test(body.encounter_id)) {
-    const encRes = await pool.query<{
-      patient_id: string;
-      intake_visit_reason: string | null;
-      chief_complaint_text: string | null;
-    }>(
-      `SELECT patient_id, intake_visit_reason, chief_complaint_text
-       FROM encounters WHERE id = $1 LIMIT 1`,
-      [body.encounter_id],
-    );
-    if (encRes.rows.length > 0) {
-      const enc = encRes.rows[0];
-      visitReason = (enc.intake_visit_reason || enc.chief_complaint_text || '').trim();
-      const probRes = await pool.query<{ summary_payload: { problems?: string[] } | null }>(
-        `SELECT summary_payload FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
-        [enc.patient_id],
-      );
-      problems = probRes.rows[0]?.summary_payload?.problems ?? [];
-    }
-  }
-
-  const userMessage = JSON.stringify({
-    free_text: freeText,
-    visit_reason: visitReason || '(none)',
-    active_problems: problems,
-  });
-
   try {
-    const t0 = Date.now();
-    const result = await qwenJson<{ suggestions: Array<{ code: string; label: string; rationale: string; confidence: number }> }>(
-      SYSTEM_PROMPT,
-      userMessage,
-      { timeoutMs: 45_000 },
-    );
-    const latency_ms = Date.now() - t0;
-
-    // Validate format only — per V's locked decision #2.
-    const clean: Suggestion[] = (result.json.suggestions ?? [])
-      .filter((s) => s.code && ICD10_REGEX.test(s.code.trim().toUpperCase()))
-      .slice(0, 8)
-      .map((s) => ({
-        code: s.code.trim().toUpperCase(),
-        label: (s.label ?? '').slice(0, 200) || s.code,
-        rationale: (s.rationale ?? '').slice(0, 100),
-        confidence: Math.max(0, Math.min(1, Number(s.confidence) || 0.5)),
-      }));
-
-    return NextResponse.json({ ok: true, suggestions: clean, latency_ms });
-  } catch (e) {
-    const msg = e instanceof QwenError ? `Qwen ${e.kind}` : e instanceof Error ? e.message : String(e);
-    return NextResponse.json({
-      ok: true,                                  // soft-fail
-      suggestions: [],
-      error: msg.slice(0, 200),
+  // Auth — session OR migration secret (the secret path is for debug curl).
+    const headerSecret = req.headers.get('x-migration-secret');
+    const expectedSecret = process.env.MIGRATION_SECRET;
+    let authed = !!expectedSecret && headerSecret === expectedSecret;
+    if (!authed) {
+      const session = await getCurrentUser();
+      if (session) authed = true;
+    }
+    if (!authed) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  
+    const body = (await req.json()) as { free_text?: string; encounter_id?: string };
+    const freeText = (body.free_text ?? '').trim();
+    if (freeText.length < 2) {
+      return NextResponse.json({ ok: true, suggestions: [], note: 'too_short' });
+    }
+  
+    // Optional encounter context (improves disambiguation but not required)
+    let visitReason = '';
+    let problems: string[] = [];
+    if (body.encounter_id && /^[0-9a-f-]{36}$/i.test(body.encounter_id)) {
+      const encRes = await pool.query<{
+        patient_id: string;
+        intake_visit_reason: string | null;
+        chief_complaint_text: string | null;
+      }>(
+        `SELECT patient_id, intake_visit_reason, chief_complaint_text
+         FROM encounters WHERE id = $1 LIMIT 1`,
+        [body.encounter_id],
+      );
+      if (encRes.rows.length > 0) {
+        const enc = encRes.rows[0];
+        visitReason = (enc.intake_visit_reason || enc.chief_complaint_text || '').trim();
+        const probRes = await pool.query<{ summary_payload: { problems?: string[] } | null }>(
+          `SELECT summary_payload FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
+          [enc.patient_id],
+        );
+        problems = probRes.rows[0]?.summary_payload?.problems ?? [];
+      }
+    }
+  
+    const userMessage = JSON.stringify({
+      free_text: freeText,
+      visit_reason: visitReason || '(none)',
+      active_problems: problems,
     });
+  
+    try {
+      const t0 = Date.now();
+      const result = await qwenJson<{ suggestions: Array<{ code: string; label: string; rationale: string; confidence: number }> }>(
+        SYSTEM_PROMPT,
+        userMessage,
+        { timeoutMs: 45_000 },
+      );
+      const latency_ms = Date.now() - t0;
+  
+      // Validate format only — per V's locked decision #2.
+      const clean: Suggestion[] = (result.json.suggestions ?? [])
+        .filter((s) => s.code && ICD10_REGEX.test(s.code.trim().toUpperCase()))
+        .slice(0, 8)
+        .map((s) => ({
+          code: s.code.trim().toUpperCase(),
+          label: (s.label ?? '').slice(0, 200) || s.code,
+          rationale: (s.rationale ?? '').slice(0, 100),
+          confidence: Math.max(0, Math.min(1, Number(s.confidence) || 0.5)),
+        }));
+  
+      return NextResponse.json({ ok: true, suggestions: clean, latency_ms });
+    } catch (e) {
+      const msg = e instanceof QwenError ? `Qwen ${e.kind}` : e instanceof Error ? e.message : String(e);
+      return NextResponse.json({
+        ok: true,                                  // soft-fail
+        suggestions: [],
+        error: msg.slice(0, 200),
+      });
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[icd10/interpret] uncaught", msg);
+    return NextResponse.json({ ok: false, error: "server_error", detail: msg.slice(0, 300) }, { status: 500 });
   }
 }
