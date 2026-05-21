@@ -20,6 +20,7 @@
  */
 import { useEffect, useState } from 'react';
 import { DiagnosticSearch, type CatalogRow } from './DiagnosticSearch';
+import { BundlePickerChips } from './BundlePickerChips';
 
 type Source =
   | 'manual'
@@ -235,7 +236,27 @@ export function DiagnosticsQuickAddStrip({
         )}
 
         {expanded && (
-          <div className="rounded-md border border-even-blue-100 bg-even-blue-50/30 p-3">
+          <div className="rounded-md border border-even-blue-100 bg-even-blue-50/30 p-3 space-y-3">
+            <BundlePickerChips
+              alreadyInCart={cartCodes}
+              onPick={(items) => {
+                setCart((cur) => {
+                  const existing = new Set(cur.map((c) => c.service_code));
+                  const next = [...cur];
+                  for (const it of items) {
+                    if (existing.has(it.service_code)) continue;
+                    next.push({
+                      service_code: it.service_code,
+                      display_name: it.display_name,
+                      sub_department: it.sub_department,
+                      modality: it.modality,
+                      source: 'bundle',
+                    });
+                  }
+                  return next;
+                });
+              }}
+            />
             <DiagnosticSearch
               onAdd={add}
               cartCodes={cartCodes}
@@ -289,6 +310,10 @@ export function DiagnosticsQuickAddStrip({
                       ) : c.existing_id ? (
                         <span className="shrink-0 rounded-full bg-even-ink-100 px-1.5 py-0 text-[10px] text-even-ink-600">
                           existing
+                        </span>
+                      ) : c.source === 'bundle' ? (
+                        <span className="shrink-0 rounded-full bg-even-blue-50 px-1.5 py-0 text-[10px] text-even-blue-700 ring-1 ring-even-blue-200">
+                          via bundle
                         </span>
                       ) : (
                         <span className="shrink-0 rounded-full bg-even-ink-100 px-1.5 py-0 text-[10px] text-even-ink-600">
