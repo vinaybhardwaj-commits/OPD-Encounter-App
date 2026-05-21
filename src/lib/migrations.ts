@@ -823,9 +823,28 @@ export const MIGRATIONS: Migration[] = [
       );
 
       -- Generated tsvector column for FTS (idempotent add)
-      -- Note: to_tsvector(text) is STABLE; to_tsvector(regconfig, text) is
-      -- IMMUTABLE. GENERATED columns require IMMUTABLE expressions, so we
-      -- cast 'english'::regconfig explicitly.
+      -- Note: Postgres treats to_tsvector(...) AND the 'english'::regconfig
+      -- cast as STABLE (not IMMUTABLE) because the registered TS config
+      -- could in theory change. GENERATED columns demand IMMUTABLE. The
+      -- bulletproof pattern is an IMMUTABLE wrapper function: Postgres
+      -- trusts the declared marker at face value.
+      CREATE OR REPLACE FUNCTION diagnostic_catalog_search_tsv_immut(
+        p_display_name   text,
+        p_synonyms       text[],
+        p_sub_department text,
+        p_description    text
+      ) RETURNS tsvector
+      LANGUAGE sql
+      IMMUTABLE
+      PARALLEL SAFE
+      AS $fn$
+        SELECT
+          setweight(to_tsvector('english'::regconfig, coalesce(p_display_name, '')), 'A') ||
+          setweight(to_tsvector('english'::regconfig, coalesce(array_to_string(p_synonyms, ' '), '')), 'B') ||
+          setweight(to_tsvector('english'::regconfig, coalesce(p_sub_department, '')), 'C') ||
+          setweight(to_tsvector('english'::regconfig, coalesce(p_description, '')), 'D');
+      $fn$;
+
       DO $$
       BEGIN
         IF NOT EXISTS (
@@ -836,10 +855,9 @@ export const MIGRATIONS: Migration[] = [
           ALTER TABLE diagnostic_catalog
             ADD COLUMN search_tsv tsvector
             GENERATED ALWAYS AS (
-              setweight(to_tsvector('english'::regconfig, coalesce(display_name, '')), 'A') ||
-              setweight(to_tsvector('english'::regconfig, coalesce(array_to_string(synonyms, ' '), '')), 'B') ||
-              setweight(to_tsvector('english'::regconfig, coalesce(sub_department, '')), 'C') ||
-              setweight(to_tsvector('english'::regconfig, coalesce(description, '')), 'D')
+              diagnostic_catalog_search_tsv_immut(
+                display_name, synonyms, sub_department, description
+              )
             ) STORED;
         END IF;
       END $$;
