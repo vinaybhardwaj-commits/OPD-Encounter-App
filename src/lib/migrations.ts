@@ -823,6 +823,9 @@ export const MIGRATIONS: Migration[] = [
       );
 
       -- Generated tsvector column for FTS (idempotent add)
+      -- Note: to_tsvector(text) is STABLE; to_tsvector(regconfig, text) is
+      -- IMMUTABLE. GENERATED columns require IMMUTABLE expressions, so we
+      -- cast 'english'::regconfig explicitly.
       DO $$
       BEGIN
         IF NOT EXISTS (
@@ -833,10 +836,10 @@ export const MIGRATIONS: Migration[] = [
           ALTER TABLE diagnostic_catalog
             ADD COLUMN search_tsv tsvector
             GENERATED ALWAYS AS (
-              setweight(to_tsvector('english', coalesce(display_name, '')), 'A') ||
-              setweight(to_tsvector('english', coalesce(array_to_string(synonyms, ' '), '')), 'B') ||
-              setweight(to_tsvector('english', coalesce(sub_department, '')), 'C') ||
-              setweight(to_tsvector('english', coalesce(description, '')), 'D')
+              setweight(to_tsvector('english'::regconfig, coalesce(display_name, '')), 'A') ||
+              setweight(to_tsvector('english'::regconfig, coalesce(array_to_string(synonyms, ' '), '')), 'B') ||
+              setweight(to_tsvector('english'::regconfig, coalesce(sub_department, '')), 'C') ||
+              setweight(to_tsvector('english'::regconfig, coalesce(description, '')), 'D')
             ) STORED;
         END IF;
       END $$;
