@@ -22,6 +22,8 @@ import { useRouter } from 'next/navigation';
 import { CC_CHIPS } from '@/lib/cc-chips';
 import { lookupIcd10 } from '@/lib/icd10';
 import { Icd10Typeahead } from './Icd10Typeahead';
+import { Icd10SuggestedChips } from './Icd10SuggestedChips';
+import { ExtractIcd10FromAssessmentButton } from './ExtractIcd10FromAssessmentButton';
 import { DictateButton } from './DictateButton';
 import { PrescriptionCompose } from './PrescriptionCompose';
 import type { PrescriptionLine } from './DrugRow';
@@ -173,6 +175,9 @@ export function EncounterEditor({
   const [cc, setCc] = useState(initial.chief_complaint_text ?? '');
   const [exam, setExam] = useState(initial.exam_findings ?? '');
   const [assessmentCodes, setAssessmentCodes] = useState<string[]>(initial.assessment_codes ?? []);
+  // v3.8 — labels for Qwen-supplied ICD-10 codes (codes not in lib/icd10's
+  // static table). Falls back to lookupIcd10() in chip rendering.
+  const [assessmentCodeLabels, setAssessmentCodeLabels] = useState<Record<string, string>>({});
   const [assessment, setAssessment] = useState(initial.assessment_text ?? '');
   const [vitals, setVitals] = useState<Vitals>(initial.vitals ?? {});
   const [disposition, setDisposition] = useState<Disposition | null>(initial.disposition);
@@ -443,7 +448,7 @@ export function EncounterEditor({
         {assessmentCodes.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-2">
             {assessmentCodes.map((code) => {
-              const label = lookupIcd10(code);
+              const label = assessmentCodeLabels[code] ?? lookupIcd10(code);
               return (
                 <span
                   key={code}
@@ -474,14 +479,27 @@ export function EncounterEditor({
           </div>
         )}
         {!readOnly && (
-          <div className="mb-3">
-            <Icd10Typeahead
-              excludeCodes={assessmentCodes}
-              onSelect={(item) =>
+          <div className="mb-3 space-y-2">
+            {/* v3.8 — passive Qwen ICD-10 chips above the typeahead */}
+            <Icd10SuggestedChips
+              encounterId={initial.id}
+              alreadyAddedCodes={new Set(assessmentCodes)}
+              onAdd={(item) => {
                 setAssessmentCodes((cur) =>
                   cur.includes(item.code) ? cur : [...cur, item.code],
-                )
-              }
+                );
+                setAssessmentCodeLabels((cur) => ({ ...cur, [item.code]: item.label }));
+              }}
+            />
+            <Icd10Typeahead
+              excludeCodes={assessmentCodes}
+              encounterId={initial.id}
+              onSelect={(item) => {
+                setAssessmentCodes((cur) =>
+                  cur.includes(item.code) ? cur : [...cur, item.code],
+                );
+                setAssessmentCodeLabels((cur) => ({ ...cur, [item.code]: item.label }));
+              }}
             />
           </div>
         )}
@@ -493,6 +511,19 @@ export function EncounterEditor({
           placeholder="e.g., Acute pharyngitis, likely viral."
           className={textareaCls}
         />
+        {!readOnly && (
+          <ExtractIcd10FromAssessmentButton
+            encounterId={initial.id}
+            assessmentText={assessment}
+            alreadyAddedCodes={new Set(assessmentCodes)}
+            onAdd={(item) => {
+              setAssessmentCodes((cur) =>
+                cur.includes(item.code) ? cur : [...cur, item.code],
+              );
+              setAssessmentCodeLabels((cur) => ({ ...cur, [item.code]: item.label }));
+            }}
+          />
+        )}
       </Section>
 
       <Section

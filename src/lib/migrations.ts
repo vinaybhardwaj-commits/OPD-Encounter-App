@@ -1223,6 +1223,20 @@ export const MIGRATIONS: Migration[] = [
         FOR EACH ROW EXECUTE FUNCTION lab_orders_delete_trigger();
     `,
   },
+  {
+    version: 27,
+    name: 'v3_8_icd10_llm_cache',
+    sql: `
+      -- v3.8 — ICD-10 LLM-assist cache columns on encounters.
+      --
+      -- Mirrors v3.5a's ai_suggested_orders cache shape exactly:
+      -- (payload, generated_at, context_hash). Passive chips fire on
+      -- mount and re-fire when context_hash changes.
+      ALTER TABLE encounters ADD COLUMN IF NOT EXISTS ai_suggested_icd10 JSONB;
+      ALTER TABLE encounters ADD COLUMN IF NOT EXISTS ai_suggested_icd10_generated_at TIMESTAMPTZ;
+      ALTER TABLE encounters ADD COLUMN IF NOT EXISTS ai_suggested_icd10_context_hash TEXT;
+    `,
+  },
 ];
 
 /**
