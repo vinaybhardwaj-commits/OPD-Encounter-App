@@ -80,7 +80,7 @@ type Counts = {
 export default async function LabPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; category?: string }>;
 }) {
   const session = await getCurrentUser();
   if (!session) redirect('/auth/login');
@@ -89,6 +89,8 @@ export default async function LabPage({
   const tab: Tab = (TAB_ORDER as string[]).includes(sp.tab ?? '')
     ? (sp.tab as Tab)
     : 'pending';
+  // v3.7 — optional sub_department filter chips per tab
+  const category = (sp.category ?? '').trim() || null;
 
   // Resolve current tech's doctors-row id for "mine" filters.
   const { rows: meRows } = await pool.query<{ id: string; name: string }>(
@@ -126,8 +128,10 @@ export default async function LabPage({
     posted_today: Number(countRows[0]?.posted_today ?? 0),
   };
 
-  // The actual row list for the selected tab.
-  const orders = await loadOrdersForTab(tab);
+  // The actual row list for the selected tab — optionally narrowed to a sub_department.
+  const orders = await loadOrdersForTab(tab, category);
+  // v3.7 — per-tab sub_department counts for the chip filter row.
+  const categoryCounts = await loadCategoryCountsForTab(tab);
 
   return (
     <main className="min-h-screen bg-even-white-DEFAULT">
@@ -195,6 +199,37 @@ export default async function LabPage({
         </nav>
       </header>
 
+      {/* v3.7 — sub_department filter chips (per tab) */}
+      {categoryCounts.length > 1 && (
+        <div className="mx-auto max-w-6xl px-6 pt-3">
+          <div className="flex flex-wrap gap-1.5">
+            <Link
+              href={`/lab?tab=${tab}`}
+              className={`rounded-full border px-2.5 py-0.5 text-[11px] ${
+                category === null
+                  ? 'border-even-pink-300 bg-even-pink-50 text-even-pink-800'
+                  : 'border-even-ink-200 bg-white text-even-ink-600 hover:bg-even-ink-50'
+              }`}
+            >
+              All · {categoryCounts.reduce((s, c) => s + c.n, 0)}
+            </Link>
+            {categoryCounts.map((c) => (
+              <Link
+                key={c.sub_department}
+                href={`/lab?tab=${tab}&category=${encodeURIComponent(c.sub_department)}`}
+                className={`rounded-full border px-2.5 py-0.5 text-[11px] ${
+                  category === c.sub_department
+                    ? 'border-even-pink-300 bg-even-pink-50 text-even-pink-800'
+                    : 'border-even-ink-200 bg-white text-even-ink-600 hover:bg-even-ink-50'
+                }`}
+              >
+                {c.sub_department} · {c.n}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       <section className="mx-auto max-w-6xl px-6 py-6">
         {orders.length === 0 ? (
           <p className="rounded-xl border border-dashed border-even-ink-200 bg-white p-8 text-center text-sm text-even-ink-400">
@@ -216,7 +251,7 @@ export default async function LabPage({
 // Tab loaders
 // ---------------------------------------------------------------------------
 
-async function loadOrdersForTab(tab: Tab): Promise<OrderRow[]> {
+async function loadOrdersForTab(tab: Tab, category: string | null): Promise<OrderRow[]> {
   const whereByTab: Record<Tab, string> = {
     // Date scope lock L.x — today + any unresolved earlier
     pending: `lo.status = 'pending'`,
@@ -232,6 +267,12 @@ async function loadOrdersForTab(tab: Tab): Promise<OrderRow[]> {
     posted_today: 'lo.resulted_at DESC',
   };
 
+  const params: unknown[] = [];
+  let categoryWhere = '';
+  if (category) {
+    params.push(category);
+    categoryWhere = ` AND dc.sub_department = $${params.length}`;
+  }
   const sql = `
     SELECT
       lo.id, lo.status, lo.raw_text, lo.display_name,
@@ -257,11 +298,37 @@ async function loadOrdersForTab(tab: Tab): Promise<OrderRow[]> {
     LEFT JOIN doctors doc ON doc.id = lo.ordering_doctor_id
     LEFT JOIN doctors cce ON cce.id = lo.pre_staged_by_cce_id
     LEFT JOIN doctors tech ON tech.id = lo.claimed_by_lab_tech_id
-    WHERE ${whereByTab[tab]}
+    -- v3.7: join through diagnostic_orders → diagnostic_catalog for sub_department filter
+    LEFT JOIN diagnostic_orders do2 ON do2.id = lo.id
+    LEFT JOIN diagnostic_catalog dc ON dc.service_code = do2.service_code
+    WHERE ${whereByTab[tab]}${categoryWhere}
     ORDER BY ${orderByByTab[tab]}
     LIMIT 100
   `;
-  const { rows } = await pool.query<OrderRow>(sql);
+  const { rows } = await pool.query<OrderRow>(sql, params);
+  return rows;
+}
+
+// v3.7 — count orders by sub_department for the current tab, so the chip row
+// can show 'Biochemistry · 5 · Hematology · 3 · ...'.
+async function loadCategoryCountsForTab(tab: Tab): Promise<{ sub_department: string; n: number }[]> {
+  const whereByTab: Record<Tab, string> = {
+    pending: `lo.status = 'pending'`,
+    in_progress: `lo.status = 'in_progress'`,
+    awaiting_confirm: `lo.status = 'awaiting_confirmation'`,
+    posted_today: `lo.status = 'resulted' AND lo.resulted_at::date = CURRENT_DATE`,
+  };
+  const sql = `
+    SELECT dc.sub_department, COUNT(*)::int AS n
+    FROM lab_orders lo
+    LEFT JOIN diagnostic_orders do2 ON do2.id = lo.id
+    LEFT JOIN diagnostic_catalog dc ON dc.service_code = do2.service_code
+    WHERE ${whereByTab[tab]} AND dc.sub_department IS NOT NULL
+    GROUP BY dc.sub_department
+    ORDER BY n DESC, dc.sub_department ASC
+    LIMIT 10
+  `;
+  const { rows } = await pool.query<{ sub_department: string; n: number }>(sql);
   return rows;
 }
 
