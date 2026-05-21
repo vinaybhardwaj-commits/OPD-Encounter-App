@@ -26,6 +26,14 @@
  * OR role=admin session.
  *
  * Idempotent: re-running just rewinds to the same distribution.
+ *
+ * Self-heal across days: if today's encounter pool is empty (e.g. demo
+ * was seeded N days ago and the day has rolled over), the endpoint
+ * UPDATEs the most-recent past date's encounters to encounter_date =
+ * CURRENT_DATE first, then applies the distribution. Response includes
+ * rolled_forward_from (date) + rolled_forward_count so admin tooling
+ * can surface what happened. Only short-circuits with 409 if no
+ * encounters exist in ANY date (bare DB — needs seed-v2 first).
  */
 import { NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
@@ -50,23 +58,67 @@ export async function POST(req: Request) {
   }
 
   // 1. Today's encounters in stable order (by encounter_number).
-  const { rows: today } = await pool.query<{
+  const todayQuery = `SELECT id, doctor_id, started_at::text AS started_at
+     FROM encounters
+     WHERE encounter_date = CURRENT_DATE
+     ORDER BY encounter_number ASC, started_at ASC`;
+  let { rows: today } = await pool.query<{
     id: string;
     doctor_id: string;
     started_at: string;
-  }>(
-    `SELECT id, doctor_id, started_at::text AS started_at
-     FROM encounters
-     WHERE encounter_date = CURRENT_DATE
-     ORDER BY encounter_number ASC, started_at ASC`,
-  );
+  }>(todayQuery);
+
+  // 1a. Self-heal across days. If today's pool is empty, roll the
+  //     most-recent date's encounters forward to CURRENT_DATE so the
+  //     demo always has a pool to rewind. Without this, the Replay
+  //     button silently no-ops on day N+1 (every actor view stays empty)
+  //     unless someone re-runs the heavyweight seed-v2 endpoint.
+  let rolled_forward_from: string | null = null;
+  let rolled_forward_count = 0;
   if (today.length === 0) {
+    const { rows: mostRecent } = await pool.query<{ max_date: string | null }>(
+      `SELECT MAX(encounter_date)::text AS max_date
+       FROM encounters
+       WHERE encounter_date < CURRENT_DATE`,
+    );
+    const maxDate = mostRecent[0]?.max_date;
+    if (!maxDate) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'no_encounters_at_all',
+          detail:
+            "No encounters exist in any date. Run POST /api/admin/seed-v2 to populate first.",
+        },
+        { status: 409 },
+      );
+    }
+    const { rowCount } = await pool.query(
+      `UPDATE encounters
+       SET encounter_date = CURRENT_DATE,
+           started_at = NOW(),
+           updated_at = NOW()
+       WHERE encounter_date = $1::date`,
+      [maxDate],
+    );
+    rolled_forward_from = maxDate;
+    rolled_forward_count = rowCount ?? 0;
+    // Re-query today now that we've rolled forward.
+    const reload = await pool.query<{
+      id: string;
+      doctor_id: string;
+      started_at: string;
+    }>(todayQuery);
+    today = reload.rows;
+  }
+  if (today.length === 0) {
+    // Belt and braces — should be unreachable after roll-forward succeeded.
     return NextResponse.json(
       {
         ok: false,
         error: 'no_today_encounters',
         detail:
-          "Today's encounter pool is empty. Run POST /api/admin/seed-v2 to populate first.",
+          "Today's encounter pool is empty after roll-forward attempt. Run POST /api/admin/seed-v2 to populate first.",
       },
       { status: 409 },
     );
@@ -196,6 +248,8 @@ export async function POST(req: Request) {
     ok: true,
     total_today: n,
     distribution: updateCounts,
+    rolled_forward_from,
+    rolled_forward_count,
     ran_at: new Date().toISOString(),
   });
 }
