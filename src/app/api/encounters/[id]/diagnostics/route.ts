@@ -1,29 +1,24 @@
 /**
- * POST /api/encounters/[id]/diagnostics
+ * /api/encounters/[id]/diagnostics
  *
- * Confirms a cart of diagnostic orders for the encounter. Writes into
- * `diagnostic_orders` (v3.0 table) and flips the encounter to
- * `paused_diagnostics` atomically (mirrors the v2
- * /api/encounters/[id]/send-to-diagnostics + /labs flow but on the new
- * unified table).
+ * GET — returns the encounter's open diagnostic_orders (pre_staged /
+ *       pending / in_progress / awaiting_confirmation, plus any
+ *       recently cancelled in this encounter for audit visibility).
+ *       Used by the v3.2a strip to pre-populate the cart with CCE
+ *       pre-staged tests when the doctor opens the encounter.
  *
- * Body: { cart: [{ service_code, source }] }
- * source ∈ 'manual' | 'qwen_suggestion_accepted' | 'bundle' | 'context_chip'
+ * POST — confirms the doctor's intended cart. v3.3 expanded to handle:
+ *   - Items with `existing_id` + action='keep' → promote pre_staged →
+ *     pending (lab) or ordered (other modalities), stamp doctor as
+ *     ordering_actor.
+ *   - Items in `cancel_existing_ids[]` → status='cancelled', stamp
+ *     cancelled_by_doctor_id + cancel_reason.
+ *   - Items without existing_id → INSERT a new diagnostic_orders row.
+ *   - Encounter flips to paused_diagnostics ONLY if at least one
+ *     non-cancelled order remains.
  *
- * Returns: { ok, order_ids: string[], status }
- *
- * v3.2a scope: writes only to diagnostic_orders (the new table). Does
- * NOT also write to lab_orders. The v3.0b cutover later will make
- * lab_orders a VIEW of diagnostic_orders WHERE modality='lab' so the
- * existing v2 lab pipeline (Lab tech inbox, claim, upload, etc.) sees
- * these new orders.
- *
- * UNTIL v3.0b ships, the new orders are visible in the encounter
- * timeline + this strip's confirmation toast, but DO NOT yet appear
- * on the /lab tech inbox (which queries lab_orders directly). V to
- * decide: ship v3.0b next, OR make v3.2a also dual-write to lab_orders
- * for the lab modality so the pipeline stays unbroken. Flagged in the
- * response for now.
+ * Provenance filter: every service_code is validated against
+ * diagnostic_catalog before any DB write.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
@@ -33,18 +28,73 @@ import { notifyQueue } from '@/lib/queueNotify';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+// ── GET ─────────────────────────────────────────────────────────────
+
+export async function GET(
+  _req: NextRequest,
+  ctx: { params: Promise<{ id: string }> },
+) {
+  const session = await getCurrentUser();
+  if (!session) {
+    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  }
+
+  const { id: encounterId } = await ctx.params;
+  if (!/^[0-9a-f-]{36}$/i.test(encounterId)) {
+    return NextResponse.json({ ok: false, error: 'bad_id' }, { status: 400 });
+  }
+
+  const { rows } = await pool.query<{
+    id: string;
+    service_code: string;
+    display_name: string;
+    sub_department: string;
+    modality: string;
+    status: string;
+    ordering_actor: string;
+    ordered_at: string;
+    pre_staged_at: string | null;
+    pre_staged_by_name: string | null;
+    cancel_reason: string | null;
+  }>(
+    `SELECT do2.id, do2.service_code, dc.display_name, dc.sub_department,
+            do2.modality, do2.status, do2.ordering_actor,
+            do2.ordered_at::text AS ordered_at,
+            do2.pre_staged_at::text AS pre_staged_at,
+            cce.name AS pre_staged_by_name,
+            do2.cancel_reason
+     FROM diagnostic_orders do2
+     JOIN diagnostic_catalog dc ON dc.service_code = do2.service_code
+     LEFT JOIN doctors cce ON cce.id = do2.pre_staged_by_cce_id
+     WHERE do2.encounter_id = $1
+       AND do2.status IN ('pre_staged','pending','in_progress','awaiting_confirmation','cancelled','ordered','dispatched')
+     ORDER BY do2.ordered_at ASC`,
+    [encounterId],
+  );
+
+  return NextResponse.json({ ok: true, orders: rows });
+}
+
+// ── POST ────────────────────────────────────────────────────────────
+
 type CartItem = {
+  existing_id?: string;
   service_code: string;
-  source: 'manual' | 'qwen_suggestion_accepted' | 'bundle' | 'context_chip';
+  source: 'manual' | 'qwen_suggestion_accepted' | 'bundle' | 'context_chip' | 'cce_prestage';
 };
 
-type Body = { cart: CartItem[] };
+type Body = {
+  cart: CartItem[];
+  cancel_existing_ids?: string[];
+  cancel_reason?: string;
+};
 
-const SOURCE_TO_ACTOR: Record<CartItem['source'], string> = {
+const SOURCE_TO_ACTOR: Record<string, string> = {
   manual: 'doctor',
   qwen_suggestion_accepted: 'ai_suggestion_accepted',
   bundle: 'auto_bundle',
   context_chip: 'ai_suggestion_accepted',
+  cce_prestage: 'cce_prestage',
 };
 
 export async function POST(
@@ -58,12 +108,13 @@ export async function POST(
 
   const { id: encounterId } = await ctx.params;
   const body = (await req.json()) as Body;
-  if (!body.cart || !Array.isArray(body.cart) || body.cart.length === 0) {
-    return NextResponse.json({ ok: false, error: 'empty_cart' }, { status: 400 });
+  const cart = Array.isArray(body.cart) ? body.cart : [];
+  const cancelIds = Array.isArray(body.cancel_existing_ids) ? body.cancel_existing_ids : [];
+  if (cart.length === 0 && cancelIds.length === 0) {
+    return NextResponse.json({ ok: false, error: 'empty_payload' }, { status: 400 });
   }
 
-  // Verify the encounter + look up doctor_id (for ordered_by) and
-  // patient_id (the view exposes it; lab inbox queries depend on it).
+  // Verify the encounter + look up doctor_id + patient_id
   const encRes = await pool.query<{
     id: string;
     doctor_id: string | null;
@@ -77,62 +128,118 @@ export async function POST(
     return NextResponse.json({ ok: false, error: 'encounter_not_found' }, { status: 404 });
   }
 
-  // Validate every service_code exists + look up modality for routing
-  const codes = body.cart.map((c) => c.service_code);
-  const catRes = await pool.query<{
-    service_code: string;
-    modality: 'lab' | 'imaging' | 'cardiology' | 'procedure';
-    display_name: string;
-  }>(
-    `SELECT service_code, modality, display_name FROM diagnostic_catalog
-     WHERE service_code = ANY($1::text[])`,
-    [codes],
-  );
-  const catalogByCode = new Map(catRes.rows.map((r) => [r.service_code, r]));
-  const missing = codes.filter((c) => !catalogByCode.has(c));
-  if (missing.length > 0) {
-    return NextResponse.json(
-      { ok: false, error: 'unknown_service_codes', missing },
-      { status: 400 },
+  // Provenance filter: every NEW service_code must exist in diagnostic_catalog
+  const newCodes = cart.filter((c) => !c.existing_id).map((c) => c.service_code);
+  if (newCodes.length > 0) {
+    const catRes = await pool.query<{
+      service_code: string;
+      modality: 'lab' | 'imaging' | 'cardiology' | 'procedure';
+      display_name: string;
+    }>(
+      `SELECT service_code, modality, display_name FROM diagnostic_catalog
+       WHERE service_code = ANY($1::text[])`,
+      [newCodes],
     );
+    const catalogByCode = new Map(catRes.rows.map((r) => [r.service_code, r]));
+    const missing = newCodes.filter((c) => !catalogByCode.has(c));
+    if (missing.length > 0) {
+      return NextResponse.json(
+        { ok: false, error: 'unknown_service_codes', missing },
+        { status: 400 },
+      );
+    }
+    // Stash catalog map for INSERT loop below
+    (globalThis as { __catalogByCode?: Map<string, { service_code: string; modality: 'lab' | 'imaging' | 'cardiology' | 'procedure'; display_name: string }> }).__catalogByCode = catalogByCode;
   }
+  const catalogByCode = (globalThis as { __catalogByCode?: Map<string, { service_code: string; modality: 'lab' | 'imaging' | 'cardiology' | 'procedure'; display_name: string }> }).__catalogByCode ?? new Map();
 
-  // Insert each cart item into diagnostic_orders.
-  // status='ordered' for non-lab; lab uses 'pre_staged' equivalent for now.
-  const inserted: { id: string; service_code: string; modality: string }[] = [];
+  const insertedIds: string[] = [];
+  const promotedIds: string[] = [];
+  const cancelledIds: string[] = [];
 
-  for (const item of body.cart) {
-    const cat = catalogByCode.get(item.service_code)!;
-    // Lab modality uses 'pending' so the v2 lab tech inbox (filters
-    // WHERE status IN ('pending','in_progress','awaiting_confirmation'))
-    // sees the order. Other modalities use 'ordered' (imaging =
-    // awaiting radiology; procedure = awaiting operator).
-    const initialStatus = cat.modality === 'lab' ? 'pending' : 'ordered';
-    const orderingActor = SOURCE_TO_ACTOR[item.source] ?? 'doctor';
-
+  // 1) Cancel everything in cancel_existing_ids
+  if (cancelIds.length > 0) {
     const { rows } = await pool.query<{ id: string }>(
-      `INSERT INTO diagnostic_orders (
-         encounter_id, patient_id, service_code, modality, status,
-         ordered_by_doctor_id, ordering_actor, raw_text
-       ) VALUES ($1, $2, $3, $4::text, $5::text, $6, $7::text, $8)
+      `UPDATE diagnostic_orders
+       SET status = 'cancelled',
+           cancelled_at = NOW(),
+           cancelled_by_doctor_id = $2,
+           cancel_reason = $3,
+           updated_at = NOW()
+       WHERE encounter_id = $1
+         AND id = ANY($4::uuid[])
+         AND status NOT IN ('cancelled','posted','completed')
        RETURNING id`,
-      [
-        encounterId,
-        encRes.rows[0].patient_id,
-        item.service_code,
-        cat.modality,
-        initialStatus,
-        session.id ?? null,
-        orderingActor,
-        cat.display_name, // raw_text preserved for lab_orders view compat
-      ],
+      [encounterId, session.id ?? null, body.cancel_reason ?? 'Cancelled by doctor at confirm', cancelIds],
     );
-    inserted.push({ id: rows[0].id, service_code: item.service_code, modality: cat.modality });
+    cancelledIds.push(...rows.map((r) => r.id));
   }
 
-  // Flip encounter to paused_diagnostics if not already
-  // (mirrors v2 send-to-diagnostics behaviour)
-  if (encRes.rows[0].status !== 'paused_diagnostics' && encRes.rows[0].status !== 'completed') {
+  // 2) For each cart item:
+  //    - existing_id → promote (pre_staged → pending/ordered, stamp doctor)
+  //    - no existing_id → INSERT new diagnostic_orders row
+  for (const item of cart) {
+    if (item.existing_id) {
+      // Promote — look up modality first to pick the right post-status
+      const modRes = await pool.query<{ modality: string }>(
+        `SELECT modality FROM diagnostic_orders WHERE id = $1 LIMIT 1`,
+        [item.existing_id],
+      );
+      const mod = modRes.rows[0]?.modality;
+      if (!mod) continue;
+      const promotedStatus = mod === 'lab' ? 'pending' : 'ordered';
+      const { rows } = await pool.query<{ id: string }>(
+        `UPDATE diagnostic_orders
+         SET status = $2::text,
+             ordered_by_doctor_id = COALESCE(ordered_by_doctor_id, $3),
+             ordering_actor = CASE
+                                WHEN ordering_actor = 'cce_prestage' THEN 'cce_prestage'
+                                ELSE 'doctor'
+                              END,
+             updated_at = NOW()
+         WHERE id = $1
+           AND encounter_id = $4
+           AND status IN ('pre_staged','cancelled')
+         RETURNING id`,
+        [item.existing_id, promotedStatus, session.id ?? null, encounterId],
+      );
+      if (rows.length > 0) promotedIds.push(rows[0].id);
+    } else {
+      const cat = catalogByCode.get(item.service_code)!;
+      const initialStatus = cat.modality === 'lab' ? 'pending' : 'ordered';
+      const orderingActor = SOURCE_TO_ACTOR[item.source] ?? 'doctor';
+
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO diagnostic_orders (
+           encounter_id, patient_id, service_code, modality, status,
+           ordered_by_doctor_id, ordering_actor, raw_text
+         ) VALUES ($1, $2, $3, $4::text, $5::text, $6, $7::text, $8)
+         RETURNING id`,
+        [
+          encounterId,
+          encRes.rows[0].patient_id,
+          item.service_code,
+          cat.modality,
+          initialStatus,
+          session.id ?? null,
+          orderingActor,
+          cat.display_name,
+        ],
+      );
+      insertedIds.push(rows[0].id);
+    }
+  }
+
+  // 3) Encounter flip — only if any open (non-cancelled) orders remain
+  const openCount = await pool.query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM diagnostic_orders
+     WHERE encounter_id = $1
+       AND status IN ('pre_staged','pending','in_progress','awaiting_confirmation','ordered','dispatched')`,
+    [encounterId],
+  );
+  const hasOpen = (openCount.rows[0]?.n ?? 0) > 0;
+
+  if (hasOpen && encRes.rows[0].status !== 'paused_diagnostics' && encRes.rows[0].status !== 'completed') {
     await pool.query(
       `UPDATE encounters
        SET status = 'paused_diagnostics',
@@ -140,21 +247,20 @@ export async function POST(
            paused_reason = 'diagnostic_orders',
            updated_at = NOW()
        WHERE id = $1`,
-      [encounterId, `Diagnostic panel (${inserted.length} test${inserted.length === 1 ? '' : 's'})`],
+      [encounterId, `Diagnostic panel (${openCount.rows[0].n} test${openCount.rows[0].n === 1 ? '' : 's'})`],
     );
   }
 
-  // SSE notify so /dashboard refreshes
+  // SSE refresh
   await notifyQueue('queue:global', `diagnostic_orders:${encounterId}`).catch(() => {});
+  await notifyQueue('queue:lab', `lab_orders:${encounterId}`).catch(() => {});
 
   return NextResponse.json({
     ok: true,
     encounter_id: encounterId,
-    order_ids: inserted.map((i) => i.id),
-    by_modality: inserted.reduce<Record<string, number>>((acc, i) => {
-      acc[i.modality] = (acc[i.modality] || 0) + 1;
-      return acc;
-    }, {}),
-    note: 'v3.0b — lab_orders is now a view of diagnostic_orders. Lab modality orders surface in /lab inbox via the view + triggers.',
+    inserted_ids: insertedIds,
+    promoted_ids: promotedIds,
+    cancelled_ids: cancelledIds,
+    open_count: openCount.rows[0]?.n ?? 0,
   });
 }
