@@ -64,10 +64,9 @@ export async function POST(req: Request) {
   const headerSecret = req.headers.get('x-migration-secret');
   const expectedSecret = process.env.MIGRATION_SECRET;
   let authed = !!expectedSecret && headerSecret === expectedSecret;
-  let userId: string | null = null;
   if (!authed) {
     const session = await getCurrentUser();
-    if (session) { authed = true; userId = session.id ?? null; }
+    if (session) authed = true;
   }
   if (!authed) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
 
