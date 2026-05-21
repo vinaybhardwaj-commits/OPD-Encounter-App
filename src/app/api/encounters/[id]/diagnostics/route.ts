@@ -21,9 +21,11 @@
  * diagnostic_catalog before any DB write.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { put } from '@vercel/blob';
 import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { notifyQueue } from '@/lib/queueNotify';
+import { generateImagingReferralPdf } from '@/lib/imaging-referral-pdf';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -81,6 +83,10 @@ type CartItem = {
   existing_id?: string;
   service_code: string;
   source: 'manual' | 'qwen_suggestion_accepted' | 'bundle' | 'context_chip' | 'cce_prestage';
+  // v3.6 — optional imaging-only fields captured inline in the strip cart
+  clinical_indication?: string | null;
+  body_area?: string | null;
+  laterality?: string | null;
 };
 
 type Body = {
@@ -212,8 +218,9 @@ export async function POST(
       const { rows } = await pool.query<{ id: string }>(
         `INSERT INTO diagnostic_orders (
            encounter_id, patient_id, service_code, modality, status,
-           ordered_by_doctor_id, ordering_actor, raw_text
-         ) VALUES ($1, $2, $3, $4::text, $5::text, $6, $7::text, $8)
+           ordered_by_doctor_id, ordering_actor, raw_text,
+           clinical_indication, body_area, laterality
+         ) VALUES ($1, $2, $3, $4::text, $5::text, $6, $7::text, $8, $9, $10, $11)
          RETURNING id`,
         [
           encounterId,
@@ -224,9 +231,21 @@ export async function POST(
           session.id ?? null,
           orderingActor,
           cat.display_name,
+          cat.modality === 'imaging' ? (item.clinical_indication ?? null) : null,
+          cat.modality === 'imaging' ? (item.body_area ?? null) : null,
+          cat.modality === 'imaging' ? (item.laterality ?? null) : null,
         ],
       );
       insertedIds.push(rows[0].id);
+      // v3.6 — kick PDF generation for imaging items inline (sub-second).
+      if (cat.modality === 'imaging') {
+        try {
+          await generateAndAttachImagingReferral(rows[0].id);
+        } catch (e) {
+          // PDF failure doesn't block the order — stays in 'ordered' status.
+          console.error('imaging referral PDF failed for', rows[0].id, e);
+        }
+      }
     }
   }
 
@@ -264,3 +283,100 @@ export async function POST(
     open_count: openCount.rows[0]?.n ?? 0,
   });
 }
+
+
+// ── v3.6 imaging referral PDF generation + Blob upload + status flip ──
+
+async function generateAndAttachImagingReferral(orderId: string): Promise<void> {
+  // Load every field the PDF needs
+  const { rows } = await pool.query<{
+    id: string;
+    service_code: string;
+    display_name: string;
+    sub_department: string;
+    modality: string;
+    body_area: string | null;
+    laterality: string | null;
+    clinical_indication: string | null;
+    ordered_at: string;
+    encounter_number: string;
+    encounter_date: string;
+    chief_complaint_text: string | null;
+    patient_name: string;
+    patient_mrn: string;
+    patient_age_years: number;
+    patient_sex: string;
+    patient_phone_e164: string | null;
+    doctor_name: string | null;
+    doctor_mci: string | null;
+  }>(
+    `SELECT do2.id, do2.service_code, dc.display_name, dc.sub_department,
+            do2.modality, do2.body_area, do2.laterality, do2.clinical_indication,
+            do2.ordered_at::text AS ordered_at,
+            e.encounter_number, e.encounter_date::text AS encounter_date,
+            e.chief_complaint_text,
+            p.name AS patient_name, p.mrn AS patient_mrn,
+            p.age_years AS patient_age_years, p.sex AS patient_sex,
+            p.phone_e164 AS patient_phone_e164,
+            d.name AS doctor_name, d.mci_registration_number AS doctor_mci
+     FROM diagnostic_orders do2
+     JOIN diagnostic_catalog dc ON dc.service_code = do2.service_code
+     JOIN encounters e ON e.id = do2.encounter_id
+     JOIN patients p ON p.id = do2.patient_id
+     LEFT JOIN doctors d ON d.id = do2.ordered_by_doctor_id
+     WHERE do2.id = $1 LIMIT 1`,
+    [orderId],
+  );
+  if (rows.length === 0) return;
+  const r = rows[0];
+
+  const pdfBytes = await generateImagingReferralPdf({
+    encounter: {
+      encounter_number: r.encounter_number,
+      encounter_date: r.encounter_date,
+      chief_complaint_text: r.chief_complaint_text,
+    },
+    patient: {
+      name: r.patient_name,
+      mrn: r.patient_mrn,
+      age_years: r.patient_age_years,
+      sex: r.patient_sex,
+      phone_e164: r.patient_phone_e164,
+    },
+    doctor: {
+      name: r.doctor_name ?? 'Doctor',
+      mci_registration_number: r.doctor_mci,
+    },
+    order: {
+      service_code: r.service_code,
+      display_name: r.display_name,
+      sub_department: r.sub_department,
+      modality: r.modality,
+      body_area: r.body_area,
+      laterality: r.laterality,
+      clinical_indication: r.clinical_indication,
+      ordered_at: r.ordered_at,
+    },
+    demo: process.env.DEMO_MODE !== 'false',
+  });
+
+  const blobPath = `imaging-referrals/${r.encounter_number}-${orderId.slice(0, 8)}.pdf`;
+  const { url } = await put(blobPath, Buffer.from(pdfBytes), {
+    access: 'public',
+    contentType: 'application/pdf',
+    addRandomSuffix: true,
+  });
+
+  await pool.query(
+    `UPDATE diagnostic_orders
+     SET referral_pdf_url = $2, status = 'dispatched', updated_at = NOW()
+     WHERE id = $1`,
+    [orderId, url],
+  );
+
+  // DEMO_MODE WhatsApp log only (no Meta API call yet)
+  if (process.env.DEMO_MODE !== 'false') {
+    console.log(`[DEMO_MODE WhatsApp] Radiology referral for order ${orderId} → ${url}`);
+  }
+}
+

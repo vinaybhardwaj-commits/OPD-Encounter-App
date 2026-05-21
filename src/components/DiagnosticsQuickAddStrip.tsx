@@ -53,6 +53,10 @@ type CartItem = {
   source: Source;
   pre_staged_by_name?: string | null;
   pre_staged_at?: string | null;
+  // v3.6 — imaging-only fields captured inline (modal lives in v3.2b)
+  clinical_indication?: string;
+  body_area?: string;
+  laterality?: string;
 };
 
 const MODALITY_BADGE: Record<CatalogRow['modality'], string> = {
@@ -133,6 +137,10 @@ export function DiagnosticsQuickAddStrip({
     }]);
   };
 
+  const updateItem = (code: string, patch: Partial<CartItem>) => {
+    setCart((cur) => cur.map((c) => c.service_code === code ? { ...c, ...patch } : c));
+  };
+
   const remove = (item: CartItem) => {
     if (item.existing_id) {
       // Existing → pending cancel (reason captured below)
@@ -172,6 +180,9 @@ export function DiagnosticsQuickAddStrip({
             existing_id: c.existing_id,
             service_code: c.service_code,
             source: c.source,
+            clinical_indication: c.modality === 'imaging' ? (c.clinical_indication || null) : undefined,
+            body_area: c.modality === 'imaging' ? (c.body_area || null) : undefined,
+            laterality: c.modality === 'imaging' ? (c.laterality || null) : undefined,
           })),
           cancel_existing_ids: Array.from(pendingCancel.keys()),
           cancel_reason: combinedReason,
@@ -315,7 +326,8 @@ export function DiagnosticsQuickAddStrip({
 
             <ul className="divide-y divide-even-ink-50">
               {cart.map((c) => (
-                <li key={c.service_code} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                <li key={c.service_code} className="px-3 py-2 text-sm">
+                  <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
                       <span className="font-medium text-even-navy">{c.display_name}</span>
@@ -356,6 +368,36 @@ export function DiagnosticsQuickAddStrip({
                   >
                     × Remove
                   </button>
+                  </div>
+                  {/* v3.6 — imaging-specific inline detail fields */}
+                  {c.modality === 'imaging' && (
+                    <div className="mt-1.5 flex gap-2 pl-5">
+                      <input
+                        type="text"
+                        value={c.clinical_indication ?? ''}
+                        onChange={(e) => updateItem(c.service_code, { clinical_indication: e.target.value })}
+                        placeholder='Clinical indication — e.g. "rule out gallstones"'
+                        className="flex-1 rounded-md border border-violet-200 bg-white px-2 py-1 text-[11px]"
+                      />
+                      <input
+                        type="text"
+                        value={c.body_area ?? ''}
+                        onChange={(e) => updateItem(c.service_code, { body_area: e.target.value })}
+                        placeholder='Body area'
+                        className="w-24 rounded-md border border-violet-200 bg-white px-2 py-1 text-[11px]"
+                      />
+                      <select
+                        value={c.laterality ?? ''}
+                        onChange={(e) => updateItem(c.service_code, { laterality: e.target.value || undefined })}
+                        className="w-20 rounded-md border border-violet-200 bg-white px-2 py-1 text-[11px]"
+                      >
+                        <option value="">—</option>
+                        <option value="left">Left</option>
+                        <option value="right">Right</option>
+                        <option value="bilateral">Both</option>
+                      </select>
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
