@@ -865,26 +865,16 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS diagnostic_catalog_tsv_idx
         ON diagnostic_catalog USING GIN (search_tsv);
 
-      -- pg_trgm index expression must be IMMUTABLE; array_to_string is STABLE
-      -- in Postgres, so we wrap the concat in an IMMUTABLE function. Queries
-      -- must use the SAME function expression to hit this index.
-      CREATE OR REPLACE FUNCTION diagnostic_catalog_search_text_immut(
-        p_display_name text,
-        p_synonyms     text[]
-      ) RETURNS text
-      LANGUAGE sql
-      IMMUTABLE
-      PARALLEL SAFE
-      AS $fn$
-        SELECT coalesce(p_display_name, '') || ' ' ||
-               coalesce(array_to_string(p_synonyms, ' '), '');
-      $fn$;
-
-      CREATE INDEX IF NOT EXISTS diagnostic_catalog_trgm_idx
+      -- pg_trgm index on display_name only (simplest IMMUTABLE expression).
+      -- Postgres rejects index expressions containing functions that recurse
+      -- into STABLE primitives like array_to_string(), even when wrapped in
+      -- an IMMUTABLE marker. Synonym trgm-tolerance is acceptable to defer:
+      -- synonyms are still FTS-searchable via the search_tsv column with
+      -- weight 'B'. A trigger-maintained text column with synonym concat
+      -- can be added in v3.2 if doctors complain about synonym typos.
+      CREATE INDEX IF NOT EXISTS diagnostic_catalog_trgm_display_idx
         ON diagnostic_catalog
-        USING GIN (
-          diagnostic_catalog_search_text_immut(display_name, synonyms) gin_trgm_ops
-        );
+        USING GIN (display_name gin_trgm_ops);
 
       CREATE INDEX IF NOT EXISTS diagnostic_catalog_modality_active_idx
         ON diagnostic_catalog (modality, is_active);
