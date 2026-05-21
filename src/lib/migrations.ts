@@ -865,9 +865,26 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS diagnostic_catalog_tsv_idx
         ON diagnostic_catalog USING GIN (search_tsv);
 
+      -- pg_trgm index expression must be IMMUTABLE; array_to_string is STABLE
+      -- in Postgres, so we wrap the concat in an IMMUTABLE function. Queries
+      -- must use the SAME function expression to hit this index.
+      CREATE OR REPLACE FUNCTION diagnostic_catalog_search_text_immut(
+        p_display_name text,
+        p_synonyms     text[]
+      ) RETURNS text
+      LANGUAGE sql
+      IMMUTABLE
+      PARALLEL SAFE
+      AS $fn$
+        SELECT coalesce(p_display_name, '') || ' ' ||
+               coalesce(array_to_string(p_synonyms, ' '), '');
+      $fn$;
+
       CREATE INDEX IF NOT EXISTS diagnostic_catalog_trgm_idx
         ON diagnostic_catalog
-        USING GIN ((display_name || ' ' || array_to_string(synonyms, ' ')) gin_trgm_ops);
+        USING GIN (
+          diagnostic_catalog_search_text_immut(display_name, synonyms) gin_trgm_ops
+        );
 
       CREATE INDEX IF NOT EXISTS diagnostic_catalog_modality_active_idx
         ON diagnostic_catalog (modality, is_active);
