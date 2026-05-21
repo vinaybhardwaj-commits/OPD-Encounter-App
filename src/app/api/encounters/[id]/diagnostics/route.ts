@@ -62,13 +62,15 @@ export async function POST(
     return NextResponse.json({ ok: false, error: 'empty_cart' }, { status: 400 });
   }
 
-  // Verify the encounter + look up doctor_id for ordered_by
+  // Verify the encounter + look up doctor_id (for ordered_by) and
+  // patient_id (the view exposes it; lab inbox queries depend on it).
   const encRes = await pool.query<{
     id: string;
     doctor_id: string | null;
+    patient_id: string | null;
     status: string;
   }>(
-    `SELECT id, doctor_id, status FROM encounters WHERE id = $1 LIMIT 1`,
+    `SELECT id, doctor_id, patient_id, status FROM encounters WHERE id = $1 LIMIT 1`,
     [encounterId],
   );
   if (encRes.rows.length === 0) {
@@ -101,16 +103,29 @@ export async function POST(
 
   for (const item of body.cart) {
     const cat = catalogByCode.get(item.service_code)!;
-    const initialStatus = 'ordered';
+    // Lab modality uses 'pending' so the v2 lab tech inbox (filters
+    // WHERE status IN ('pending','in_progress','awaiting_confirmation'))
+    // sees the order. Other modalities use 'ordered' (imaging =
+    // awaiting radiology; procedure = awaiting operator).
+    const initialStatus = cat.modality === 'lab' ? 'pending' : 'ordered';
     const orderingActor = SOURCE_TO_ACTOR[item.source] ?? 'doctor';
 
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO diagnostic_orders (
-         encounter_id, service_code, modality, status,
-         ordered_by_doctor_id, ordering_actor
-       ) VALUES ($1, $2, $3::text, $4::text, $5, $6::text)
+         encounter_id, patient_id, service_code, modality, status,
+         ordered_by_doctor_id, ordering_actor, raw_text
+       ) VALUES ($1, $2, $3, $4::text, $5::text, $6, $7::text, $8)
        RETURNING id`,
-      [encounterId, item.service_code, cat.modality, initialStatus, session.id ?? null, orderingActor],
+      [
+        encounterId,
+        encRes.rows[0].patient_id,
+        item.service_code,
+        cat.modality,
+        initialStatus,
+        session.id ?? null,
+        orderingActor,
+        cat.display_name, // raw_text preserved for lab_orders view compat
+      ],
     );
     inserted.push({ id: rows[0].id, service_code: item.service_code, modality: cat.modality });
   }
@@ -140,6 +155,6 @@ export async function POST(
       acc[i.modality] = (acc[i.modality] || 0) + 1;
       return acc;
     }, {}),
-    note: 'v3.2a — orders written to diagnostic_orders only. Lab tech inbox (lab_orders) cutover ships in v3.0b.',
+    note: 'v3.0b — lab_orders is now a view of diagnostic_orders. Lab modality orders surface in /lab inbox via the view + triggers.',
   });
 }

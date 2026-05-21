@@ -972,6 +972,257 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN IF NOT EXISTS ai_suggested_orders_context_hash TEXT;
     `,
   },
+  {
+    version: 26,
+    name: 'v3_0b_lab_orders_to_view_cutover',
+    sql: `
+      -- v3.0b — destructive plumbing: lab_orders becomes a VIEW.
+      --
+      -- This is the high-risk migration of the v3 arc. After it runs:
+      --   - All v2 lab pipeline code (lab tech inbox, claim, upload,
+      --     Qwen-VL extraction, confirm, sweep cron, annotations) keeps
+      --     working because lab_orders is now a VIEW with INSTEAD OF
+      --     INSERT/UPDATE/DELETE triggers routing to diagnostic_orders.
+      --   - Orders created via the v3.2a strip become visible in /lab
+      --     because the view exposes them with the lab_orders schema.
+      --   - The v2 lab_orders TABLE no longer exists; diagnostic_orders
+      --     is the canonical store.
+      --
+      -- Rollback procedure if this migration causes prod issues:
+      --   1. Re-create lab_orders TABLE from scratch using migration
+      --      v13 + v19 + v20 DDL.
+      --   2. INSERT INTO lab_orders SELECT mapped cols FROM
+      --      diagnostic_orders WHERE modality='lab'.
+      --   3. DROP VIEW lab_orders (the post-cutover one).
+      --   4. Rename the freshly-restored lab_orders TABLE.
+      --   No data loss because we backfilled, not migrated.
+
+      -- Step 1: Add missing columns to diagnostic_orders so the
+      -- backfill from lab_orders is lossless.
+      ALTER TABLE diagnostic_orders ADD COLUMN IF NOT EXISTS patient_id UUID REFERENCES patients(id) ON DELETE CASCADE;
+      ALTER TABLE diagnostic_orders ADD COLUMN IF NOT EXISTS raw_text TEXT;
+      ALTER TABLE diagnostic_orders ADD COLUMN IF NOT EXISTS canonical_key TEXT;
+      ALTER TABLE diagnostic_orders ADD COLUMN IF NOT EXISTS pre_staged_by_cce_id UUID REFERENCES doctors(id) ON DELETE SET NULL;
+      ALTER TABLE diagnostic_orders ADD COLUMN IF NOT EXISTS pre_staged_at TIMESTAMPTZ;
+      ALTER TABLE diagnostic_orders ADD COLUMN IF NOT EXISTS extracted_at TIMESTAMPTZ;
+      ALTER TABLE diagnostic_orders ADD COLUMN IF NOT EXISTS extraction_lab_tech_id UUID REFERENCES doctors(id) ON DELETE SET NULL;
+      ALTER TABLE diagnostic_orders ADD COLUMN IF NOT EXISTS auto_posted BOOLEAN NOT NULL DEFAULT FALSE;
+
+      CREATE INDEX IF NOT EXISTS diagnostic_orders_patient_idx
+        ON diagnostic_orders (patient_id, ordered_at DESC);
+      CREATE INDEX IF NOT EXISTS diagnostic_orders_lab_inbox_v2_idx
+        ON diagnostic_orders (status, ordered_at)
+        WHERE modality = 'lab' AND status IN ('pending','in_progress','awaiting_confirmation');
+      CREATE INDEX IF NOT EXISTS diagnostic_orders_lab_claimed_idx
+        ON diagnostic_orders (claimed_by_lab_tech_id)
+        WHERE modality = 'lab' AND claimed_by_lab_tech_id IS NOT NULL;
+
+      -- Step 2: Seed fallback catalog row for any lab_orders.display_name
+      -- that can't be fuzzy-matched to an EHRC catalog row. This row
+      -- exists ONLY for backfill compat; future orders should never use it.
+      INSERT INTO diagnostic_catalog (
+        service_code, display_name, department, sub_department, service_type,
+        modality, patient_types, is_active, description
+      ) VALUES (
+        'LEGACY-LAB-UNMATCHED',
+        'Legacy lab order (v3 backfill placeholder)',
+        'Diagnostic-Lab', 'Legacy', 'Pathology',
+        'lab', ARRAY['OP','IP','ER','DC','HC','Registration'], true,
+        'Auto-created during v3.0b cutover for lab_orders rows whose display_name could not be fuzzy-matched to an EHRC catalog row. Doctors should re-pick the correct test in the encounter timeline.'
+      ) ON CONFLICT (service_code) DO NOTHING;
+
+      -- Step 3: Backfill lab_orders rows into diagnostic_orders.
+      -- service_code resolution priority: exact match → trigram fuzzy match → LEGACY-LAB-UNMATCHED.
+      INSERT INTO diagnostic_orders (
+        id, encounter_id, patient_id, service_code, modality, status,
+        ordered_by_doctor_id, ordered_at, ordering_actor,
+        raw_text, canonical_key,
+        pre_staged_by_cce_id, pre_staged_at,
+        result_pdf_url, extracted_at, extraction_confidence, extraction_raw,
+        extraction_lab_tech_id, auto_posted,
+        claimed_by_lab_tech_id, claimed_at,
+        posted_at
+      )
+      SELECT
+        lo.id, lo.encounter_id, lo.patient_id,
+        COALESCE(
+          (SELECT dc.service_code FROM diagnostic_catalog dc
+            WHERE dc.modality='lab' AND LOWER(dc.display_name) = LOWER(lo.display_name) LIMIT 1),
+          (SELECT dc.service_code FROM diagnostic_catalog dc
+            WHERE dc.modality='lab' AND similarity(dc.display_name, COALESCE(lo.display_name, lo.raw_text)) > 0.3
+            ORDER BY similarity(dc.display_name, COALESCE(lo.display_name, lo.raw_text)) DESC LIMIT 1),
+          'LEGACY-LAB-UNMATCHED'
+        ) AS service_code,
+        'lab',
+        lo.status,
+        lo.ordering_doctor_id,
+        lo.ordered_at,
+        CASE WHEN lo.pre_staged_by_cce_id IS NOT NULL THEN 'cce_prestage' ELSE 'doctor' END,
+        lo.raw_text, lo.canonical_key,
+        lo.pre_staged_by_cce_id, lo.pre_staged_at,
+        lo.source_pdf_url, lo.extracted_at, lo.extraction_confidence, lo.extraction_raw,
+        lo.extraction_lab_tech_id, lo.auto_posted,
+        lo.claimed_by_lab_tech_id, lo.claimed_at,
+        lo.resulted_at
+      FROM lab_orders lo
+      WHERE NOT EXISTS (SELECT 1 FROM diagnostic_orders dox WHERE dox.id = lo.id);
+
+      -- Step 4: Verify counts match — fail loud if backfill lost anything.
+      DO $$
+      DECLARE
+        src_count INT;
+        dst_count INT;
+      BEGIN
+        SELECT COUNT(*) INTO src_count FROM lab_orders;
+        SELECT COUNT(*) INTO dst_count FROM diagnostic_orders WHERE modality='lab';
+        IF src_count != dst_count THEN
+          RAISE EXCEPTION 'v3.0b backfill mismatch: lab_orders=% diagnostic_orders.lab=%', src_count, dst_count;
+        END IF;
+      END $$;
+
+      -- Step 5: Drop the FK constraint on lab_results.lab_order_id (points
+      -- to the soon-to-be-dropped table). We'll re-add it after.
+      ALTER TABLE lab_results DROP CONSTRAINT IF EXISTS lab_results_lab_order_id_fkey;
+
+      -- Step 6: Drop the lab_orders TABLE.
+      DROP TABLE IF EXISTS lab_orders CASCADE;
+
+      -- Step 7: Re-add the FK on lab_results pointing to diagnostic_orders.
+      -- IDs preserved during backfill so existing lab_results rows now
+      -- correctly reference diagnostic_orders rows.
+      ALTER TABLE lab_results
+        ADD CONSTRAINT lab_results_lab_order_id_fkey
+        FOREIGN KEY (lab_order_id) REFERENCES diagnostic_orders(id) ON DELETE SET NULL;
+
+      -- Step 8: Create lab_orders as a VIEW exposing the v2 column shape.
+      CREATE OR REPLACE VIEW lab_orders AS
+      SELECT
+        do2.id,
+        do2.encounter_id,
+        do2.patient_id,
+        do2.ordered_by_doctor_id AS ordering_doctor_id,
+        do2.raw_text,
+        do2.canonical_key,
+        dc.display_name,
+        do2.status,
+        do2.ordered_at,
+        do2.posted_at AS resulted_at,
+        do2.pre_staged_by_cce_id,
+        do2.pre_staged_at,
+        do2.result_pdf_url AS source_pdf_url,
+        do2.extracted_at,
+        do2.extraction_confidence,
+        do2.extraction_raw,
+        do2.extraction_lab_tech_id,
+        do2.auto_posted,
+        do2.claimed_by_lab_tech_id,
+        do2.claimed_at
+      FROM diagnostic_orders do2
+      LEFT JOIN diagnostic_catalog dc ON dc.service_code = do2.service_code
+      WHERE do2.modality = 'lab';
+
+      -- Step 9: INSTEAD OF triggers so existing v2 code that writes to
+      -- lab_orders keeps working unchanged.
+      CREATE OR REPLACE FUNCTION lab_orders_insert_trigger() RETURNS TRIGGER AS $tfn$
+      DECLARE
+        v_service_code TEXT;
+        v_search_text TEXT;
+      BEGIN
+        v_search_text := COALESCE(NEW.display_name, NEW.raw_text);
+
+        SELECT dc.service_code INTO v_service_code
+        FROM diagnostic_catalog dc
+        WHERE dc.modality='lab' AND LOWER(dc.display_name) = LOWER(v_search_text)
+        LIMIT 1;
+
+        IF v_service_code IS NULL AND v_search_text IS NOT NULL THEN
+          SELECT dc.service_code INTO v_service_code
+          FROM diagnostic_catalog dc
+          WHERE dc.modality='lab'
+            AND similarity(dc.display_name, v_search_text) > 0.3
+          ORDER BY similarity(dc.display_name, v_search_text) DESC
+          LIMIT 1;
+        END IF;
+
+        IF v_service_code IS NULL THEN
+          v_service_code := 'LEGACY-LAB-UNMATCHED';
+        END IF;
+
+        INSERT INTO diagnostic_orders (
+          id, encounter_id, patient_id, service_code, modality, status,
+          ordered_by_doctor_id, ordered_at, ordering_actor,
+          raw_text, canonical_key,
+          pre_staged_by_cce_id, pre_staged_at,
+          result_pdf_url, extracted_at, extraction_confidence, extraction_raw,
+          extraction_lab_tech_id, auto_posted,
+          claimed_by_lab_tech_id, claimed_at,
+          posted_at
+        ) VALUES (
+          COALESCE(NEW.id, gen_random_uuid()),
+          NEW.encounter_id, NEW.patient_id, v_service_code, 'lab',
+          COALESCE(NEW.status, 'pending'),
+          NEW.ordering_doctor_id, COALESCE(NEW.ordered_at, NOW()),
+          CASE WHEN NEW.pre_staged_by_cce_id IS NOT NULL THEN 'cce_prestage' ELSE 'doctor' END,
+          NEW.raw_text, NEW.canonical_key,
+          NEW.pre_staged_by_cce_id, NEW.pre_staged_at,
+          NEW.source_pdf_url, NEW.extracted_at, NEW.extraction_confidence, NEW.extraction_raw,
+          NEW.extraction_lab_tech_id, COALESCE(NEW.auto_posted, FALSE),
+          NEW.claimed_by_lab_tech_id, NEW.claimed_at,
+          NEW.resulted_at
+        );
+
+        RETURN NEW;
+      END;
+      $tfn$ LANGUAGE plpgsql;
+
+      DROP TRIGGER IF EXISTS lab_orders_insert_instead ON lab_orders;
+      CREATE TRIGGER lab_orders_insert_instead
+        INSTEAD OF INSERT ON lab_orders
+        FOR EACH ROW EXECUTE FUNCTION lab_orders_insert_trigger();
+
+      CREATE OR REPLACE FUNCTION lab_orders_update_trigger() RETURNS TRIGGER AS $tfn$
+      BEGIN
+        UPDATE diagnostic_orders SET
+          status                = COALESCE(NEW.status, status),
+          ordered_at            = COALESCE(NEW.ordered_at, ordered_at),
+          ordered_by_doctor_id  = NEW.ordering_doctor_id,
+          raw_text              = COALESCE(NEW.raw_text, raw_text),
+          canonical_key         = NEW.canonical_key,
+          pre_staged_by_cce_id  = NEW.pre_staged_by_cce_id,
+          pre_staged_at         = NEW.pre_staged_at,
+          result_pdf_url        = NEW.source_pdf_url,
+          extracted_at          = NEW.extracted_at,
+          extraction_confidence = NEW.extraction_confidence,
+          extraction_raw        = NEW.extraction_raw,
+          extraction_lab_tech_id = NEW.extraction_lab_tech_id,
+          auto_posted           = COALESCE(NEW.auto_posted, FALSE),
+          claimed_by_lab_tech_id = NEW.claimed_by_lab_tech_id,
+          claimed_at            = NEW.claimed_at,
+          posted_at             = NEW.resulted_at,
+          updated_at            = NOW()
+        WHERE id = OLD.id AND modality = 'lab';
+        RETURN NEW;
+      END;
+      $tfn$ LANGUAGE plpgsql;
+
+      DROP TRIGGER IF EXISTS lab_orders_update_instead ON lab_orders;
+      CREATE TRIGGER lab_orders_update_instead
+        INSTEAD OF UPDATE ON lab_orders
+        FOR EACH ROW EXECUTE FUNCTION lab_orders_update_trigger();
+
+      CREATE OR REPLACE FUNCTION lab_orders_delete_trigger() RETURNS TRIGGER AS $tfn$
+      BEGIN
+        DELETE FROM diagnostic_orders WHERE id = OLD.id AND modality = 'lab';
+        RETURN OLD;
+      END;
+      $tfn$ LANGUAGE plpgsql;
+
+      DROP TRIGGER IF EXISTS lab_orders_delete_instead ON lab_orders;
+      CREATE TRIGGER lab_orders_delete_instead
+        INSTEAD OF DELETE ON lab_orders
+        FOR EACH ROW EXECUTE FUNCTION lab_orders_delete_trigger();
+    `,
+  },
 ];
 
 /**
