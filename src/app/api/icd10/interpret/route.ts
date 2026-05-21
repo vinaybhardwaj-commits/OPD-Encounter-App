@@ -60,8 +60,16 @@ Rules:
 Return ONLY the JSON object. No markdown, no prose, no preamble.`;
 
 export async function POST(req: Request) {
-  const session = await getCurrentUser();
-  if (!session) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  // Auth — session OR migration secret (the secret path is for debug curl).
+  const headerSecret = req.headers.get('x-migration-secret');
+  const expectedSecret = process.env.MIGRATION_SECRET;
+  let authed = !!expectedSecret && headerSecret === expectedSecret;
+  let userId: string | null = null;
+  if (!authed) {
+    const session = await getCurrentUser();
+    if (session) { authed = true; userId = session.id ?? null; }
+  }
+  if (!authed) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
 
   const body = (await req.json()) as { free_text?: string; encounter_id?: string };
   const freeText = (body.free_text ?? '').trim();

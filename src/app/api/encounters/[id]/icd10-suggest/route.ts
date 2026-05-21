@@ -55,11 +55,17 @@ Rules:
 Return ONLY the JSON object.`;
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const session = await getCurrentUser();
-  if (!session) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  const headerSecret = req.headers.get('x-migration-secret');
+  const expectedSecret = process.env.MIGRATION_SECRET;
+  let authed = !!expectedSecret && headerSecret === expectedSecret;
+  if (!authed) {
+    const session = await getCurrentUser();
+    if (session) authed = true;
+  }
+  if (!authed) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
 
   const { id: encounterId } = await ctx.params;
 
