@@ -768,6 +768,182 @@ export const MIGRATIONS: Migration[] = [
         ON lab_result_annotations(lab_result_id, created_at DESC);
     `,
   },
+  {
+    version: 25,
+    name: 'v3_diagnostic_foundation',
+    sql: `
+      -- v3.0 — diagnostic-ordering rebuild FOUNDATION (additive only).
+      --
+      -- This migration adds every NEW v3 table + the AI suggestion cache
+      -- columns on encounters. It does NOT touch lab_orders or any other
+      -- v2 table. The v2 lab pipeline keeps working unchanged.
+      --
+      -- Tables created:
+      --   - diagnostic_catalog          (canonical EHRC test catalog,
+      --                                  seeded in v3.1 from xlsx)
+      --   - diagnostic_bundles          (super-admin curated, seeded v3.4)
+      --   - diagnostic_bundle_items     (junction)
+      --   - diagnostic_orders           (unified parent — labs + imaging
+      --                                  + cardiology + procedure)
+      --
+      -- Columns added on encounters:
+      --   - ai_suggested_orders               JSONB (v3.5a cache)
+      --   - ai_suggested_orders_generated_at  TIMESTAMPTZ
+      --   - ai_suggested_orders_context_hash  TEXT
+      --
+      -- The destructive cutover (DROP lab_orders TABLE, replace with
+      -- VIEW + INSTEAD OF triggers backfilling into diagnostic_orders
+      -- with service_code FK to catalog) is its own migration in
+      -- v3.0b — runs AFTER v3.1 (catalog seed) + v3.2 (new ordering UI)
+      -- are real-data-tested.
+
+      CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+      -- 1. diagnostic_catalog ---------------------------------------
+      CREATE TABLE IF NOT EXISTS diagnostic_catalog (
+        service_code         TEXT PRIMARY KEY,
+        display_name         TEXT NOT NULL,
+        department           TEXT NOT NULL,
+        sub_department       TEXT NOT NULL,
+        service_type         TEXT NOT NULL,
+        modality             TEXT NOT NULL
+          CHECK (modality IN ('lab', 'imaging', 'cardiology', 'procedure')),
+        patient_types        TEXT[] NOT NULL DEFAULT '{}',
+        is_active            BOOLEAN NOT NULL DEFAULT true,
+        is_outsourced        BOOLEAN NOT NULL DEFAULT false,
+        schedulable          BOOLEAN NOT NULL DEFAULT false,
+        multiple_sittings    BOOLEAN NOT NULL DEFAULT false,
+        description          TEXT,
+        patient_instructions TEXT,
+        synonyms             TEXT[] NOT NULL DEFAULT '{}',
+        standard_codes       JSONB NOT NULL DEFAULT '{}'::jsonb,
+        tags                 TEXT[] NOT NULL DEFAULT '{}',
+        created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      -- Generated tsvector column for FTS (idempotent add)
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'diagnostic_catalog'
+            AND column_name = 'search_tsv'
+        ) THEN
+          ALTER TABLE diagnostic_catalog
+            ADD COLUMN search_tsv tsvector
+            GENERATED ALWAYS AS (
+              setweight(to_tsvector('english', coalesce(display_name, '')), 'A') ||
+              setweight(to_tsvector('english', coalesce(array_to_string(synonyms, ' '), '')), 'B') ||
+              setweight(to_tsvector('english', coalesce(sub_department, '')), 'C') ||
+              setweight(to_tsvector('english', coalesce(description, '')), 'D')
+            ) STORED;
+        END IF;
+      END $$;
+
+      CREATE INDEX IF NOT EXISTS diagnostic_catalog_tsv_idx
+        ON diagnostic_catalog USING GIN (search_tsv);
+
+      CREATE INDEX IF NOT EXISTS diagnostic_catalog_trgm_idx
+        ON diagnostic_catalog
+        USING GIN ((display_name || ' ' || array_to_string(synonyms, ' ')) gin_trgm_ops);
+
+      CREATE INDEX IF NOT EXISTS diagnostic_catalog_modality_active_idx
+        ON diagnostic_catalog (modality, is_active);
+
+      CREATE INDEX IF NOT EXISTS diagnostic_catalog_dept_idx
+        ON diagnostic_catalog (department, sub_department) WHERE is_active = true;
+
+      -- 2. bundles --------------------------------------------------
+      CREATE TABLE IF NOT EXISTS diagnostic_bundles (
+        id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name                 TEXT NOT NULL UNIQUE,
+        description          TEXT,
+        specialty_tag        TEXT,
+        is_active            BOOLEAN NOT NULL DEFAULT true,
+        created_by_doctor_id UUID REFERENCES doctors(id),
+        created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS diagnostic_bundle_items (
+        bundle_id    UUID NOT NULL REFERENCES diagnostic_bundles(id) ON DELETE CASCADE,
+        service_code TEXT NOT NULL REFERENCES diagnostic_catalog(service_code),
+        order_n      INTEGER NOT NULL,
+        is_optional  BOOLEAN NOT NULL DEFAULT false,
+        PRIMARY KEY (bundle_id, service_code)
+      );
+
+      CREATE INDEX IF NOT EXISTS diagnostic_bundle_items_bundle_idx
+        ON diagnostic_bundle_items (bundle_id, order_n);
+
+      -- 3. diagnostic_orders (unified parent) ----------------------
+      CREATE TABLE IF NOT EXISTS diagnostic_orders (
+        id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        encounter_id           UUID NOT NULL REFERENCES encounters(id) ON DELETE CASCADE,
+        service_code           TEXT NOT NULL REFERENCES diagnostic_catalog(service_code),
+        modality               TEXT NOT NULL
+          CHECK (modality IN ('lab', 'imaging', 'cardiology', 'procedure')),
+
+        -- lifecycle: lab states preserved (pre_staged | ordered | in_progress |
+        -- awaiting_confirmation | posted | cancelled), imaging (ordered |
+        -- dispatched | completed), procedure (ordered | in_progress | completed)
+        status                 TEXT NOT NULL,
+
+        ordered_by_doctor_id   UUID REFERENCES doctors(id),
+        ordered_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        ordering_actor         TEXT NOT NULL DEFAULT 'doctor'
+          CHECK (ordering_actor IN ('cce_prestage', 'doctor', 'auto_bundle', 'ai_suggestion_accepted')),
+        source_bundle_id       UUID REFERENCES diagnostic_bundles(id),
+
+        -- lab-specific (mirror v2 lab_orders shape — v3.0b backfill target)
+        claimed_by_lab_tech_id UUID REFERENCES doctors(id),
+        claimed_at             TIMESTAMPTZ,
+        result_pdf_url         TEXT,
+        extraction_raw         JSONB,
+        extraction_confidence  NUMERIC,
+        posted_at              TIMESTAMPTZ,
+
+        -- imaging-specific (v3.6)
+        laterality             TEXT,
+        body_area              TEXT,
+        clinical_indication    TEXT,
+        referral_pdf_url       TEXT,
+
+        -- procedure-specific (v3.6)
+        operator_doctor_id     UUID REFERENCES doctors(id),
+        procedure_note         TEXT,
+
+        -- audit
+        cancelled_at           TIMESTAMPTZ,
+        cancelled_by_doctor_id UUID REFERENCES doctors(id),
+        cancel_reason          TEXT,
+
+        modality_meta          JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+        created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS diagnostic_orders_encounter_idx
+        ON diagnostic_orders (encounter_id);
+
+      CREATE INDEX IF NOT EXISTS diagnostic_orders_modality_status_idx
+        ON diagnostic_orders (modality, status);
+
+      CREATE INDEX IF NOT EXISTS diagnostic_orders_lab_inbox_idx
+        ON diagnostic_orders (status, claimed_by_lab_tech_id)
+        WHERE modality = 'lab';
+
+      -- 4. encounters.ai_suggested_orders cache (v3.5a consumer) ---
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ai_suggested_orders JSONB;
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ai_suggested_orders_generated_at TIMESTAMPTZ;
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ai_suggested_orders_context_hash TEXT;
+    `,
+  },
 ];
 
 /**
