@@ -21,6 +21,7 @@ import { getDemoStatus } from '@/lib/seed';
 import { getSummaryBackfillStatus } from '@/lib/patient-summary';
 import {
   actionReset,
+  actionReplayDemo,
   actionAddWalkIn,
   actionMarkReady,
   actionBackfillSummaries,
@@ -82,19 +83,30 @@ export default async function DemoControlsPage() {
           </div>
         </div>
 
-        {/* Reset demo */}
+        {/* Reset demo — v2 replay is the primary, v1 reset is the fallback */}
         <ControlCard
-          title="Reset demo"
-          description="Wipes today's 17+ encounter rows and reseeds the original queue (12 completed, 3 paused, 2 ready). Patients are kept. Use this between practice runs."
+          title="Reset demo for next run"
+          description="Rewinds today's encounters network-wide into a varied pristine state (30% registered for CCE/Triage, 20% at_triage, 20% waiting_for_doctor, 20% paused_diagnostics with a fresh CBC, 10% ready_to_resume). Clears handoff notes + DDI/DDx caches + voice queries. Patients kept. Use this between practice runs."
         >
-          <form action={actionReset}>
-            <button
-              type="submit"
-              className="rounded-lg border border-even-pink-300 bg-even-pink-50 px-4 py-2 text-sm font-semibold text-even-pink-800 transition hover:border-even-pink-400 hover:bg-even-pink-100"
-            >
-              Reset today's queue
-            </button>
-          </form>
+          <div className="flex flex-wrap items-center gap-3">
+            <form action={actionReplayDemo}>
+              <button
+                type="submit"
+                className="rounded-lg bg-even-blue px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-even-blue-700"
+              >
+                ↻ Replay v2 demo
+              </button>
+            </form>
+            <form action={actionReset}>
+              <button
+                type="submit"
+                className="rounded-lg border border-even-pink-300 bg-even-pink-50 px-4 py-2 text-sm font-medium text-even-pink-800 transition hover:bg-even-pink-100"
+                title="v1-era reset — only touches your own encounters"
+              >
+                Reset just my queue (v1)
+              </button>
+            </form>
+          </div>
         </ControlCard>
 
         {/* Add walk-in */}
