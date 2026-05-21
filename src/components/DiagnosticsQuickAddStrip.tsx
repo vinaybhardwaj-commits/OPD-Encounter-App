@@ -21,6 +21,7 @@
 import { useEffect, useState } from 'react';
 import { DiagnosticSearch, type CatalogRow } from './DiagnosticSearch';
 import { BundlePickerChips } from './BundlePickerChips';
+import { SuggestedOrderChips } from './SuggestedOrderChips';
 
 type Source =
   | 'manual'
@@ -237,6 +238,25 @@ export function DiagnosticsQuickAddStrip({
 
         {expanded && (
           <div className="rounded-md border border-even-blue-100 bg-even-blue-50/30 p-3 space-y-3">
+            <SuggestedOrderChips
+              encounterId={encounterId}
+              alreadyInCart={cartCodes}
+              onAdd={(row) => {
+                setCart((cur) => {
+                  if (cur.some((c) => c.service_code === row.service_code)) return cur;
+                  return [
+                    ...cur,
+                    {
+                      service_code: row.service_code,
+                      display_name: row.display_name,
+                      sub_department: row.sub_department,
+                      modality: row.modality,
+                      source: 'context_chip',
+                    },
+                  ];
+                });
+              }}
+            />
             <BundlePickerChips
               alreadyInCart={cartCodes}
               onPick={(items) => {
@@ -314,6 +334,10 @@ export function DiagnosticsQuickAddStrip({
                       ) : c.source === 'bundle' ? (
                         <span className="shrink-0 rounded-full bg-even-blue-50 px-1.5 py-0 text-[10px] text-even-blue-700 ring-1 ring-even-blue-200">
                           via bundle
+                        </span>
+                      ) : c.source === 'context_chip' ? (
+                        <span className="shrink-0 rounded-full bg-violet-50 px-1.5 py-0 text-[10px] text-violet-700 ring-1 ring-violet-200">
+                          via Qwen
                         </span>
                       ) : (
                         <span className="shrink-0 rounded-full bg-even-ink-100 px-1.5 py-0 text-[10px] text-even-ink-600">
