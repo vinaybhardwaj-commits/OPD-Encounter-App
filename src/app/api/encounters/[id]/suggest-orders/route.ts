@@ -106,7 +106,7 @@ export async function GET(
         [enc.patient_id],
       ),
       pool.query<{ id: string; encounter_date: string; chief_complaint_text: string | null; impression: string | null }>(
-        `SELECT id::text, encounter_date::text, chief_complaint_text, assessment AS impression
+        `SELECT id::text, encounter_date::text, chief_complaint_text, assessment_text AS impression
          FROM encounters
          WHERE patient_id = $1 AND id != $2 AND status='completed'
          ORDER BY encounter_date DESC LIMIT 5`,
