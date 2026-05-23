@@ -23,6 +23,7 @@ import { NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { qwenJson, QwenError } from '@/lib/qwen';
+import { loadComorbidityContext, comorbidityContextForPrompt } from '@/lib/patient-comorbidity-context';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -195,7 +196,14 @@ export async function POST(
     assessment: r.assessment_text,
   }));
 
-  const userMessage = JSON.stringify({ today, background, past_encounters });
+  // v3.9.1b — comorbidity-aware prompt context
+  const comorbidityCtx = await loadComorbidityContext(enc.patient_id).catch(() => null);
+  const userMessage = JSON.stringify({
+    today,
+    background,
+    past_encounters,
+    ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {}),
+  });
 
   const scanned_at = new Date().toISOString();
   let payload: DdxPayload;

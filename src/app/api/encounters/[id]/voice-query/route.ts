@@ -29,6 +29,7 @@ import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { transcribeAudio } from '@/lib/transcribe';
 import { qwenJson, QwenError } from '@/lib/qwen';
+import { loadComorbidityContext, comorbidityContextForPrompt } from '@/lib/patient-comorbidity-context';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -186,6 +187,9 @@ export async function POST(
   );
 
   const validIds = new Set(pastRows.map((r) => r.id));
+  // v3.9.1b — comorbidity-aware prompt context
+  const comorbidityCtx = await loadComorbidityContext(enc.patient_id).catch(() => null);
+
   const userMessage = JSON.stringify({
     question,
     background: {
@@ -202,7 +206,8 @@ export async function POST(
       date: r.encounter_date,
       chief_complaint: r.chief_complaint_text,
       assessment: r.assessment_text,
-    })),
+    })),,
+    ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
   });
 
   // 3. Qwen.

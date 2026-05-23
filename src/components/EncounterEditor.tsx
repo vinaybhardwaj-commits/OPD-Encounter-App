@@ -23,6 +23,7 @@ import { CC_CHIPS } from '@/lib/cc-chips';
 import { lookupIcd10 } from '@/lib/icd10';
 import { Icd10Typeahead } from './Icd10Typeahead';
 import { ComorbidityBand } from './ComorbidityBand';
+import { isChronicIcd10 } from '@/lib/chronic-icd10-patterns';
 import { Icd10SuggestedChips } from './Icd10SuggestedChips';
 import { ExtractIcd10FromAssessmentButton } from './ExtractIcd10FromAssessmentButton';
 import { DictateButton } from './DictateButton';
@@ -183,6 +184,37 @@ export function EncounterEditor({
   const [assessmentCodeLabels, setAssessmentCodeLabels] = useState<Record<string, string>>(
     initial.assessment_code_labels ?? {},
   );
+  // v3.9.1b — canonical comorbidity codes for cross-link UX (the small
+  // "↗ on comorbidity list" tag + "Add as chronic comorbidity?" soft prompt).
+  // Refetched on add via the soft prompt so the tag flips immediately.
+  const [comorbidityCodes, setComorbidityCodes] = useState<Set<string>>(new Set());
+  const [pendingComorbidityAdd, setPendingComorbidityAdd] = useState<string | null>(null);
+  useEffect(() => {
+    let cancel = false;
+    const fetchCodes = async () => {
+      const res = await fetch(`/api/patients/${patient.id}/comorbidities`);
+      const json = await res.json();
+      if (!cancel && json.ok) {
+        const active = (json.comorbidities ?? []).filter((c: { is_resolved: boolean }) => !c.is_resolved);
+        setComorbidityCodes(new Set(active.map((c: { code: string }) => c.code)));
+      }
+    };
+    fetchCodes();
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [patient.id]);
+  const addAsComorbidity = async (code: string, label: string) => {
+    setPendingComorbidityAdd(code);
+    try {
+      const res = await fetch(`/api/patients/${patient.id}/comorbidities`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ items: [{ code, label }] }),
+      });
+      const json = await res.json();
+      if (json.ok) setComorbidityCodes((cur) => { const next = new Set(cur); next.add(code); return next; });
+    } finally { setPendingComorbidityAdd(null); }
+  };
 
   // v3.8.1 — backfill labels for any codes that lack one (e.g. codes added
   // in a prior session before label persistence shipped). One-shot on mount.
@@ -514,11 +546,45 @@ export function EncounterEditor({
                       ×
                     </button>
                   )}
+                  {/* v3.9.1b — already on comorbidity list tag */}
+                  {comorbidityCodes.has(code) && (
+                    <span className="ml-1 text-[10px] italic text-even-ink-400" title="This code is on the patient's comorbidity list">
+                      ↗ on comorbidity list
+                    </span>
+                  )}
                 </span>
               );
             })}
           </div>
         )}
+        {/* v3.9.1b — soft prompts: chronic-pattern code in Assessment but
+            not on the comorbidity list → one-tap add */}
+        {!readOnly && assessmentCodes
+          .filter((code) => isChronicIcd10(code) && !comorbidityCodes.has(code))
+          .slice(0, 4)
+          .map((code) => {
+            const label = assessmentCodeLabels[code] ?? lookupIcd10(code) ?? code;
+            const pending = pendingComorbidityAdd === code;
+            return (
+              <div
+                key={`chronic-prompt-${code}`}
+                className="mb-2 flex items-center justify-between gap-2 rounded-md border border-violet-200 bg-violet-50 px-3 py-1.5 text-[11px] text-violet-800"
+              >
+                <span>
+                  <span className="font-mono font-semibold">{code}</span>
+                  {' '}is a chronic-pattern code. Add as chronic comorbidity?
+                </span>
+                <button
+                  type="button"
+                  onClick={() => addAsComorbidity(code, label)}
+                  disabled={pending}
+                  className="rounded-md bg-violet-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+                >
+                  {pending ? 'Adding…' : '+ Add to comorbidities'}
+                </button>
+              </div>
+            );
+          })}
         {!readOnly && (
           <div className="mb-3 space-y-2">
             {/* v3.8 — passive Qwen ICD-10 chips above the typeahead */}

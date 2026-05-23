@@ -21,6 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { qwenJson, QwenError } from '@/lib/qwen';
+import { loadComorbidityContext, comorbidityContextForPrompt } from '@/lib/patient-comorbidity-context';
 import { createHash } from 'node:crypto';
 
 export const runtime = 'nodejs';
@@ -158,7 +159,10 @@ export async function GET(
     );
   
     // 5. Call Qwen
-    const userMessage = JSON.stringify({
+    // v3.9.1b — comorbidity-aware prompt context
+  const comorbidityCtx = await loadComorbidityContext(enc.patient_id).catch(() => null);
+
+  const userMessage = JSON.stringify({
       visit_reason: visitReason || '(none captured)',
       active_problems: problems,
       recent_encounters: recentEncs.map((r) => ({
@@ -170,7 +174,8 @@ export async function GET(
         service_code: c.service_code,
         display_name: c.display_name,
         sub_department: c.sub_department,
-      })),
+      })),,
+      ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
     });
   
     let payload: CachedPayload;

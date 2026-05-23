@@ -19,6 +19,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { qwenJson, QwenError } from '@/lib/qwen';
+import { loadComorbidityContext, comorbidityContextForPrompt } from '@/lib/patient-comorbidity-context';
 import { createHash } from 'node:crypto';
 
 export const runtime = 'nodejs';
@@ -115,7 +116,10 @@ export async function GET(
       return NextResponse.json({ ok: true, cached: true, payload: enc.ai_suggested_icd10 });
     }
   
-    const userMessage = JSON.stringify({
+    // v3.9.1b — comorbidity-aware prompt context
+  const comorbidityCtx = await loadComorbidityContext(enc.patient_id).catch(() => null);
+
+  const userMessage = JSON.stringify({
       visit_reason: visitReason || '(none)',
       active_problems: problems,
       draft_assessment: assessment || '(none yet)',
@@ -123,7 +127,8 @@ export async function GET(
         date: r.encounter_date,
         cc: (r.chief_complaint_text || '').slice(0, 100),
         assessment: (r.assessment_text || '').slice(0, 200),
-      })),
+      })),,
+      ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
     });
   
     let payload: CachedPayload;
