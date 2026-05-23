@@ -292,7 +292,7 @@ export function Icd10Typeahead({
           )}
         </div>
       )}
-    </div>{/* /relative */}
+    </div>
 
       {/* v3.8 — Qwen NLP suggestions block (only when encounterId set) */}
       {encounterId && qwenLoading && (
@@ -355,7 +355,7 @@ export function Icd10Typeahead({
           {qwenError}
         </div>
       )}
-    </div>{/* /space-y-2 outer wrapper */}
+    </div>
   );
 }
 
