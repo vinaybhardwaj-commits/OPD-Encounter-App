@@ -67,6 +67,40 @@ export function ComorbidityEditModal({
   const [pendingUnresolves, setPendingUnresolves] = useState<Set<string>>(new Set()); // ids
   const [pendingOnsetEdits, setPendingOnsetEdits] = useState<Map<string, string | null>>(new Map());
 
+  // v3.9.2 — Suggest from history (Qwen reads past 5-10 encounters)
+  type HistorySuggestion = { code: string; label: string; rationale: string; confidence: number };
+  const [historySuggestions, setHistorySuggestions] = useState<HistorySuggestion[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyErr, setHistoryErr] = useState<string | null>(null);
+  const [historyLatency, setHistoryLatency] = useState<number | null>(null);
+  const [historyScanned, setHistoryScanned] = useState<number | null>(null);
+
+  const fetchHistorySuggestions = async () => {
+    setHistoryLoading(true); setHistoryErr(null);
+    try {
+      const res = await fetch(`/api/patients/${patientId}/comorbidities/suggest-from-history`, { method: 'POST' });
+      const json = await res.json();
+      if (json.ok && Array.isArray(json.suggestions)) {
+        setHistorySuggestions(json.suggestions);
+        setHistoryLatency(json.latency_ms ?? null);
+        setHistoryScanned(json.encounters_scanned ?? null);
+        if (json.suggestions.length === 0 && json.error) setHistoryErr(json.error);
+      } else {
+        setHistoryErr(json.error ?? 'No suggestions');
+      }
+    } catch (e) {
+      setHistoryErr(e instanceof Error ? e.message : String(e));
+    } finally { setHistoryLoading(false); }
+  };
+
+  const acceptHistorySuggestion = (s: HistorySuggestion) => {
+    setPendingAdds((cur) => {
+      if (cur.some((p) => p.code === s.code)) return cur;
+      return [...cur, { code: s.code, label: s.label }];
+    });
+    setHistorySuggestions((cur) => cur ? cur.filter((x) => x.code !== s.code) : cur);
+  };
+
   useEffect(() => {
     let cancel = false;
     (async () => {
@@ -338,6 +372,74 @@ export function ComorbidityEditModal({
               )}
             </div>
           </div>
+        </div>
+
+        {/* v3.9.2 — Suggest from history Qwen panel */}
+        <div className="border-t border-even-ink-100 bg-even-ink-50/40 px-6 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-even-ink-500">
+                Suggest from history
+              </span>
+              <span className="text-[11px] text-even-ink-500">
+                Qwen reads past 5–10 encounters and proposes chronic conditions
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={fetchHistorySuggestions}
+              disabled={historyLoading}
+              className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+            >
+              {historyLoading ? '⟳ Reading…' : '✨ Suggest from history'}
+            </button>
+          </div>
+
+          {historyLoading && (
+            <div className="mt-2 text-[11px] italic text-violet-700">
+              Qwen is scanning past completed encounters…
+            </div>
+          )}
+
+          {historySuggestions && historySuggestions.length > 0 && (
+            <div className="mt-3 rounded-md border border-violet-200 bg-white">
+              <div className="flex items-baseline justify-between border-b border-violet-100 px-3 py-1.5">
+                <span className="text-[10px] uppercase tracking-wider text-violet-700">
+                  Suggested by Qwen
+                </span>
+                <span className="text-[10px] text-even-ink-400">
+                  {historySuggestions.length} codes from {historyScanned ?? '?'} encounters{historyLatency !== null && ` · ${(historyLatency / 1000).toFixed(1)}s`}
+                </span>
+              </div>
+              <ul className="divide-y divide-violet-50">
+                {historySuggestions.map((s) => (
+                  <li key={s.code} className="flex items-start justify-between gap-3 px-3 py-2 text-sm hover:bg-violet-50/30">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className="shrink-0 font-mono text-xs font-semibold text-even-navy">{s.code}</span>
+                        <span className="truncate text-xs text-even-ink-800">{s.label}</span>
+                        <span className="shrink-0 text-[10px] text-violet-700">{(s.confidence * 100).toFixed(0)}%</span>
+                      </div>
+                      {s.rationale && <div className="text-[10px] italic text-violet-600">{s.rationale}</div>}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => acceptHistorySuggestion(s)}
+                      className="shrink-0 rounded-md bg-violet-600 px-2 py-1 text-xs font-medium text-white hover:bg-violet-700"
+                    >+ Add</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {historySuggestions && historySuggestions.length === 0 && !historyLoading && (
+            <div className="mt-2 text-[11px] italic text-even-ink-400">
+              Qwen found no new chronic conditions in the past {historyScanned ?? '?'} encounters.
+            </div>
+          )}
+
+          {historyErr && <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-700">{historyErr}</div>}
         </div>
 
         {err && <div className="border-t border-rose-100 bg-rose-50 px-6 py-2 text-xs text-rose-700">{err}</div>}
