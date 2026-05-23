@@ -37,6 +37,7 @@ type EncounterFull = {
   exam_findings: string | null;
   vitals: Record<string, unknown> | null;
   assessment_codes: string[] | null;
+  assessment_code_labels: Record<string, string> | null;
   assessment_text: string | null;
   disposition: string | null;
   follow_up_days: number | null;
@@ -56,7 +57,7 @@ async function loadEncounterIfOwned(
             e.pending_diagnostic_test,
             e.chief_complaint_chips, e.chief_complaint_text,
             e.exam_findings, e.vitals,
-            e.assessment_codes, e.assessment_text,
+            e.assessment_codes, e.assessment_code_labels, e.assessment_text,
             e.disposition::text AS disposition,
             e.follow_up_days, e.referral_target, e.updated_at
      FROM encounters e
@@ -86,6 +87,7 @@ type PatchBody = {
   exam_findings?: string | null;
   vitals?: Record<string, unknown> | null;
   assessment_codes?: string[] | null;
+  assessment_code_labels?: Record<string, string> | null;
   assessment_text?: string | null;
   disposition?: string | null;
   follow_up_days?: number | null;
@@ -144,6 +146,7 @@ export async function PATCH(
   if ('exam_findings' in body) push('exam_findings', body.exam_findings);
   if ('vitals' in body) push('vitals', body.vitals === null ? null : JSON.stringify(body.vitals), '::jsonb');
   if ('assessment_codes' in body) push('assessment_codes', body.assessment_codes, '::text[]');
+  if ('assessment_code_labels' in body) push('assessment_code_labels', JSON.stringify(body.assessment_code_labels ?? {}), '::jsonb');
   if ('assessment_text' in body) push('assessment_text', body.assessment_text);
   if ('disposition' in body) push('disposition', body.disposition, '::disposition_kind');
   if ('follow_up_days' in body) push('follow_up_days', body.follow_up_days);

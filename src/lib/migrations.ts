@@ -1262,6 +1262,18 @@ export const MIGRATIONS: Migration[] = [
         ON patient_comorbidities (code);
     `,
   },
+  {
+    version: 29,
+    name: 'v3_8_1_assessment_code_labels',
+    sql: `
+      -- v3.8.1 — Persist ICD-10 chip labels alongside the codes so they
+      -- survive page reloads. V noticed codes were rendering as raw codes
+      -- (K63.8, B26.9, etc.) without their human-readable labels because
+      -- assessmentCodeLabels was React state only. JSONB map: code → label.
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS assessment_code_labels JSONB NOT NULL DEFAULT '{}'::jsonb;
+    `,
+  },
 ];
 
 /**
