@@ -1237,6 +1237,31 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE encounters ADD COLUMN IF NOT EXISTS ai_suggested_icd10_context_hash TEXT;
     `,
   },
+  {
+    version: 28,
+    name: 'v3_9_patient_comorbidities',
+    sql: `
+      -- v3.9 — Patient comorbidities (chronic conditions across encounters).
+      -- Minimal shape per V's lock; severity/duration/notes deferred to v4.
+      CREATE TABLE IF NOT EXISTS patient_comorbidities (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patient_id          UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+        code                TEXT NOT NULL,
+        label               TEXT NOT NULL,
+        onset_date          DATE,
+        is_resolved         BOOLEAN NOT NULL DEFAULT false,
+        resolved_at         TIMESTAMPTZ,
+        added_by_doctor_id  UUID REFERENCES doctors(id) ON DELETE SET NULL,
+        added_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (patient_id, code)
+      );
+      CREATE INDEX IF NOT EXISTS patient_comorbidities_patient_active_idx
+        ON patient_comorbidities (patient_id) WHERE is_resolved = false;
+      CREATE INDEX IF NOT EXISTS patient_comorbidities_code_idx
+        ON patient_comorbidities (code);
+    `,
+  },
 ];
 
 /**
