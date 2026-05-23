@@ -33,7 +33,7 @@ import { useRxCoherence, RxCoherencePanel, type OverrideRecord } from './RxCoher
 import { AmbientRecorder } from './AmbientRecorder';
 import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewer';
 import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
-import { OrderLabModal } from './OrderLabModal';
+import { DiagnosticOrderModal } from './DiagnosticOrderModal';
 import { SubmitConfirmModal } from './SubmitConfirmModal';
 import { FlagHandoffModal } from './FlagHandoffModal';
 import { DdxOnDemand } from './DdxOnDemand';
@@ -851,9 +851,9 @@ export function EncounterEditor({
                   type="button"
                   onClick={() => setLabModalOpen(true)}
                   className="rounded-lg border border-even-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-even-blue-800 transition hover:bg-even-blue-50"
-                  title="Multi-test lab panel (v2.1) with CCE pre-stage confirmation"
+                  title="Roomier diagnostic-ordering workspace — all modalities, shares state with the inline strip"
                 >
-                  Order labs
+                  Diagnostics workspace
                 </button>
               )}
               {canSendToDiagnostics && (
@@ -909,7 +909,7 @@ export function EncounterEditor({
         onClose={() => setDiagModalOpen(false)}
       />
 
-      <OrderLabModal
+      <DiagnosticOrderModal
         encounterId={initial.id}
         patientName={patient.name}
         open={labModalOpen}

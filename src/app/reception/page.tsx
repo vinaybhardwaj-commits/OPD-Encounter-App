@@ -20,7 +20,7 @@ import { pool } from '@/lib/db';
 import { PatientSearch } from '@/components/PatientSearch';
 import { RegisterPatientModal } from '@/components/RegisterPatientModal';
 import { QueueLive } from '@/components/QueueLive';
-import { PreStageLabButton } from '@/components/PreStageLabButton';
+import { PreStageDiagnosticsButton } from '@/components/PreStageDiagnosticsButton';
 import { actionMarkDiagnosticReady } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -346,7 +346,7 @@ function RoomQueueCard({ room }: { room: RoomWithQueue }) {
                       {(e.status === 'registered' ||
                         e.status === 'at_triage' ||
                         e.status === 'waiting_for_doctor') && (
-                        <PreStageLabButton
+                        <PreStageDiagnosticsButton
                           encounterId={e.encounter_id}
                           patientName={e.patient_name}
                           existingPreStagedCount={e.pre_staged_lab_count}
