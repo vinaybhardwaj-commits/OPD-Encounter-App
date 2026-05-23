@@ -1274,6 +1274,22 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN IF NOT EXISTS assessment_code_labels JSONB NOT NULL DEFAULT '{}'::jsonb;
     `,
   },
+  {
+    version: 30,
+    name: 'v3_9_3_demographics_comorbidity_suggest_cache',
+    sql: `
+      -- v3.9.3 — passive demographics-driven comorbidity suggestion cache
+      -- on encounters. Mirrors v3.5a (ai_suggested_orders) + v3.8
+      -- (ai_suggested_icd10) shape exactly: payload + generated_at +
+      -- context_hash. Re-fires when context_hash changes.
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ai_suggested_comorbidities JSONB;
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ai_suggested_comorbidities_generated_at TIMESTAMPTZ;
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ai_suggested_comorbidities_context_hash TEXT;
+    `,
+  },
 ];
 
 /**

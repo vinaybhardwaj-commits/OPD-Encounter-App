@@ -10,8 +10,14 @@
  * actions (right) + trigger reasons line.
  *
  * Clicking '+ Add' or 'Edit all →' opens <ComorbidityEditModal>.
+ *
+ * v3.9.3 — when active.length === 0 AND an encounterId is supplied,
+ * auto-fetch passive demographics-driven suggestions and render a
+ * dotted violet block of chips below the empty-state. "Just a guess,
+ * confirm" framing. Dismiss-all session-only via sessionStorage keyed
+ * on encounterId.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { TierBadge } from './TierBadge';
 import { ComorbidityEditModal } from './ComorbidityEditModal';
 import type { TierBreakdown } from '@/lib/comorbidity-tier';
@@ -26,23 +32,53 @@ type ApiComorbidity = {
   triggers_extended_capture: boolean;
 };
 
+type DemographicsSuggestion = { code: string; label: string; rationale: string; confidence: number };
+type DemographicsSuggestPayload =
+  | { status: 'ok'; findings: DemographicsSuggestion[]; generated_at: string; latency_ms: number }
+  | { status: 'failed'; error: string; generated_at: string }
+  | { status: 'not_eligible'; reason: string; generated_at: string };
+
 export function ComorbidityBand({
   patientId,
   patientName,
   patientAge,
   patientSex,
+  encounterId,
+  visitReasonHint,
   readOnly,
 }: {
   patientId: string;
   patientName: string;
   patientAge: number;
   patientSex: string;
+  encounterId?: string;
+  visitReasonHint?: string;
   readOnly?: boolean;
 }) {
   const [comorbidities, setComorbidities] = useState<ApiComorbidity[]>([]);
   const [tier, setTier] = useState<TierBreakdown | null>(null);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+
+  // v3.9.3 demographics-suggest state
+  const [suggest, setSuggest] = useState<DemographicsSuggestPayload | null>(null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [acceptingCode, setAcceptingCode] = useState<string | null>(null);
+  const dismissKey = useMemo(
+    () => (encounterId ? `comorbidity-demo-suggest-dismissed:${encounterId}` : null),
+    [encounterId],
+  );
+  const [dismissed, setDismissed] = useState(false);
+
+  // Restore session dismiss flag
+  useEffect(() => {
+    if (!dismissKey) return;
+    try {
+      if (sessionStorage.getItem(dismissKey) === '1') setDismissed(true);
+    } catch {
+      /* sessionStorage unavailable — ignore */
+    }
+  }, [dismissKey]);
 
   const reload = useCallback(async () => {
     try {
@@ -59,6 +95,72 @@ export function ComorbidityBand({
 
   const active = comorbidities.filter((c) => !c.is_resolved);
   const empty = active.length === 0;
+
+  // v3.9.3 — passive demographics fetch (only when truly empty + encounterId present + not dismissed + not readOnly)
+  useEffect(() => {
+    if (readOnly) return;
+    if (!encounterId) return;
+    if (loading) return;
+    if (!empty) {
+      // Once doctor adds one, drop the suggest block — v3.9.2 'Suggest from history' takes over
+      setSuggest(null);
+      return;
+    }
+    if (dismissed) return;
+    if (suggest) return; // already fetched this mount
+
+    let cancelled = false;
+    setSuggestLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`/api/encounters/${encounterId}/comorbidities/suggest-from-context`);
+        const json = await res.json();
+        if (cancelled) return;
+        if (json.ok && json.payload) setSuggest(json.payload as DemographicsSuggestPayload);
+      } catch {
+        /* soft-fail */
+      } finally {
+        if (!cancelled) setSuggestLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [empty, encounterId, dismissed, readOnly, loading, suggest]);
+
+  const acceptSuggestion = useCallback(async (s: DemographicsSuggestion) => {
+    if (acceptingCode) return;
+    setAcceptingCode(s.code);
+    try {
+      const res = await fetch(`/api/patients/${patientId}/comorbidities`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ items: [{ code: s.code, label: s.label }] }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        await reload();
+        // empty will flip to false on next render, useEffect above clears suggest
+      }
+    } catch {
+      /* soft-fail */
+    } finally {
+      setAcceptingCode(null);
+    }
+  }, [acceptingCode, patientId, reload]);
+
+  const dismissAll = useCallback(() => {
+    setDismissed(true);
+    if (dismissKey) {
+      try { sessionStorage.setItem(dismissKey, '1'); } catch { /* ignore */ }
+    }
+  }, [dismissKey]);
+
+  const sexLabel = patientSex === 'M' ? 'M' : patientSex === 'F' ? 'F' : patientSex === 'O' ? 'O' : '?';
+  const ccLabel = (visitReasonHint || '').trim().slice(0, 40);
+
+  const okSuggest = suggest && suggest.status === 'ok' ? suggest : null;
+  const showSuggestBlock =
+    !readOnly && empty && !dismissed && encounterId &&
+    (suggestLoading || (okSuggest && okSuggest.findings.length > 0));
 
   return (
     <>
@@ -121,6 +223,49 @@ export function ComorbidityBand({
             {tier && tier.trigger_reasons.length > 0 && (
               <div className="mt-2 text-[10px] text-even-ink-500">
                 Trigger reasons: {tier.trigger_reasons.join(' · ')}
+              </div>
+            )}
+
+            {/* v3.9.3 — passive demographics-suggest block (empty-state, dotted violet) */}
+            {showSuggestBlock && (
+              <div className="mt-3 rounded-lg border border-dashed border-violet-300 bg-violet-50/40 p-3">
+                <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+                  <div className="text-[11px] font-medium text-violet-800">
+                    ✨ Qwen suggests for {patientAge}{sexLabel}
+                    {ccLabel && <> with <em className="font-normal not-italic text-violet-700">{ccLabel}</em></>}
+                    {' — '}
+                    <span className="text-violet-600 italic font-normal">just a guess, confirm</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={dismissAll}
+                    className="text-[10px] uppercase tracking-wider text-violet-600 hover:text-violet-800"
+                  >
+                    Dismiss all
+                  </button>
+                </div>
+                {suggestLoading ? (
+                  <div className="text-[11px] italic text-violet-500">Thinking…</div>
+                ) : okSuggest && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {okSuggest.findings.map((s) => (
+                      <button
+                        key={s.code}
+                        type="button"
+                        disabled={!!acceptingCode}
+                        onClick={() => acceptSuggestion(s)}
+                        title={s.rationale}
+                        className="inline-flex items-baseline gap-1 rounded-full bg-white px-2.5 py-1 text-[11px] text-violet-800 ring-1 ring-violet-300 hover:bg-violet-100 disabled:opacity-50"
+                      >
+                        <span className="font-semibold">+</span>
+                        <span className="font-mono font-semibold">{s.code}</span>
+                        <span className="truncate max-w-[10rem]">{s.label}</span>
+                        <span className="text-violet-500">{Math.round(s.confidence * 100)}%</span>
+                        {acceptingCode === s.code && <span className="text-violet-400">…</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </>

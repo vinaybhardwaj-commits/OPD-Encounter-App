@@ -416,6 +416,8 @@ export function EncounterEditor({
         patientName={patient.name}
         patientAge={patient.age_years}
         patientSex={patient.sex}
+        encounterId={initial.id}
+        visitReasonHint={cc}
         readOnly={readOnly}
       />
       <Section
