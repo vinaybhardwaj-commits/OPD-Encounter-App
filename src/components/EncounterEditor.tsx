@@ -68,6 +68,7 @@ export type EncounterEditable = {
   exam_findings: string | null;
   vitals: Vitals | null;
   assessment_codes: string[] | null;
+  assessment_code_labels?: Record<string, string> | null;
   assessment_text: string | null;
   disposition: Disposition | null;
   follow_up_days: number | null;
@@ -177,7 +178,35 @@ export function EncounterEditor({
   const [assessmentCodes, setAssessmentCodes] = useState<string[]>(initial.assessment_codes ?? []);
   // v3.8 — labels for Qwen-supplied ICD-10 codes (codes not in lib/icd10's
   // static table). Falls back to lookupIcd10() in chip rendering.
-  const [assessmentCodeLabels, setAssessmentCodeLabels] = useState<Record<string, string>>({});
+  const [assessmentCodeLabels, setAssessmentCodeLabels] = useState<Record<string, string>>(
+    initial.assessment_code_labels ?? {},
+  );
+
+  // v3.8.1 — backfill labels for any codes that lack one (e.g. codes added
+  // in a prior session before label persistence shipped). One-shot on mount.
+  useEffect(() => {
+    const needed = assessmentCodes.filter(
+      (c) => !assessmentCodeLabels[c] && !lookupIcd10(c),
+    );
+    if (needed.length === 0) return;
+    let cancel = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/icd10/lookup-batch', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ codes: needed }),
+        });
+        const json = await res.json();
+        if (cancel || !json.ok || !json.labels) return;
+        setAssessmentCodeLabels((cur) => ({ ...json.labels, ...cur }));
+      } catch {
+        // silent — chip will show … placeholder, harmless
+      }
+    })();
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [assessment, setAssessment] = useState(initial.assessment_text ?? '');
   const [vitals, setVitals] = useState<Vitals>(initial.vitals ?? {});
   const [disposition, setDisposition] = useState<Disposition | null>(initial.disposition);
@@ -222,6 +251,7 @@ export function EncounterEditor({
       exam_findings: exam || null,
       vitals: Object.keys(cleanVitals).length > 0 ? cleanVitals : null,
       assessment_codes: assessmentCodes.length > 0 ? assessmentCodes : null,
+      assessment_code_labels: assessmentCodes.length > 0 ? assessmentCodeLabels : null,
       assessment_text: assessment || null,
       disposition: disposition,
       follow_up_days: disposition === 'follow_up' && followUpDays !== '' ? Number(followUpDays) : null,
@@ -456,11 +486,9 @@ export function EncounterEditor({
                   title={label}
                 >
                   <span className="font-mono font-semibold">{code}</span>
-                  {label && (
-                    <span className="hidden text-even-blue-700 sm:inline">
-                      {label}
-                    </span>
-                  )}
+                  <span className="truncate max-w-[18rem] text-even-blue-700">
+                    {label ?? <span className="italic text-even-ink-400">…</span>}
+                  </span>
                   {!readOnly && (
                     <button
                       type="button"
