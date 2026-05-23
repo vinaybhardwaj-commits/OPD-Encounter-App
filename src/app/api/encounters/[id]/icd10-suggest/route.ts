@@ -127,7 +127,7 @@ export async function GET(
         date: r.encounter_date,
         cc: (r.chief_complaint_text || '').slice(0, 100),
         assessment: (r.assessment_text || '').slice(0, 200),
-      })),,
+      })),
       ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
     });
   

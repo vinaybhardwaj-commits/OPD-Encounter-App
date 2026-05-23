@@ -206,7 +206,7 @@ export async function POST(
       date: r.encounter_date,
       chief_complaint: r.chief_complaint_text,
       assessment: r.assessment_text,
-    })),,
+    })),
     ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
   });
 

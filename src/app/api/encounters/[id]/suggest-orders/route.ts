@@ -174,7 +174,7 @@ export async function GET(
         service_code: c.service_code,
         display_name: c.display_name,
         sub_department: c.sub_department,
-      })),,
+      })),
       ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
     });
   

@@ -185,7 +185,7 @@ export async function POST(req: Request) {
         display_name: c.display_name,
         sub_department: c.sub_department,
         modality: c.modality,
-      })),,
+      })),
       ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
     });
   

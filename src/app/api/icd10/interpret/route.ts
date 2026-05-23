@@ -110,7 +110,7 @@ export async function POST(req: Request) {
   const userMessage = JSON.stringify({
       free_text: freeText,
       visit_reason: visitReason || '(none)',
-      active_problems: problems,,
+      active_problems: problems,
       ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
     });
   
