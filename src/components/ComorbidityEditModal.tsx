@@ -30,6 +30,18 @@ type ApiComorbidity = {
   panel_risk_weight: number;
   triggers_extended_capture: boolean;
   condition_name_canonical: string | null;
+  // v3.9.5
+  control_state: 'well' | 'partial' | 'uncontrolled' | null;
+  severity_state: 'mild' | 'moderate' | 'severe' | null;
+  state_updated_at: string | null;
+};
+
+type StateSuggestion = {
+  comorbidity_id: string;
+  code: string;
+  control_state: 'well' | 'partial' | 'uncontrolled' | null;
+  severity_state: 'mild' | 'moderate' | 'severe' | null;
+  rationale: string;
 };
 
 type PendingAdd = {
@@ -47,6 +59,7 @@ export function ComorbidityEditModal({
   patientName,
   patientAge,
   patientSex,
+  encounterId,
   onClose,
   onSaved,
 }: {
@@ -54,6 +67,8 @@ export function ComorbidityEditModal({
   patientName: string;
   patientAge: number;
   patientSex: string;
+  /** v3.9.5 — when supplied, enables Qwen state-suggest from assessment_text. */
+  encounterId?: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -66,6 +81,12 @@ export function ComorbidityEditModal({
   const [pendingResolves, setPendingResolves] = useState<Set<string>>(new Set()); // ids
   const [pendingUnresolves, setPendingUnresolves] = useState<Set<string>>(new Set()); // ids
   const [pendingOnsetEdits, setPendingOnsetEdits] = useState<Map<string, string | null>>(new Map());
+
+  // v3.9.5 — Qwen state-suggest + manual pending edits
+  const [stateSuggestions, setStateSuggestions] = useState<StateSuggestion[]>([]);
+  const [stateLoading, setStateLoading] = useState(false);
+  /** Confirmed/edited state per comorbidity_id — overrides server value optimistically until save. */
+  const [stateEdits, setStateEdits] = useState<Map<string, { control_state?: 'well'|'partial'|'uncontrolled'|null; severity_state?: 'mild'|'moderate'|'severe'|null; from_qwen: boolean }>>(new Map());
 
   // v3.9.2 — Suggest from history (Qwen reads past 5-10 encounters)
   type HistorySuggestion = { code: string; label: string; rationale: string; confidence: number };
@@ -115,6 +136,89 @@ export function ComorbidityEditModal({
     })();
     return () => { cancel = true; };
   }, [patientId]);
+
+  // v3.9.5 — fetch Qwen state suggestions when encounterId is supplied
+  useEffect(() => {
+    if (!encounterId) return;
+    let cancel = false;
+    setStateLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`/api/encounters/${encounterId}/comorbidity-states/suggest`);
+        const json = await res.json();
+        if (cancel) return;
+        if (json.ok && json.payload?.status === 'ok' && Array.isArray(json.payload.findings)) {
+          const findings = json.payload.findings as StateSuggestion[];
+          setStateSuggestions(findings);
+          // Pre-fill stateEdits for chips that currently have no value
+          setStateEdits((cur) => {
+            const next = new Map(cur);
+            for (const f of findings) {
+              if (next.has(f.comorbidity_id)) continue; // user already touched
+              next.set(f.comorbidity_id, {
+                control_state: f.control_state ?? undefined,
+                severity_state: f.severity_state ?? undefined,
+                from_qwen: true,
+              });
+            }
+            return next;
+          });
+        }
+      } catch {
+        /* soft-fail */
+      } finally {
+        if (!cancel) setStateLoading(false);
+      }
+    })();
+    return () => { cancel = true; };
+  }, [encounterId, existing.length]);
+
+  // v3.9.5 — getter for the current control/severity value of a chip
+  // (stateEdits > existing.control_state)
+  function effectiveState(c: ApiComorbidity): { control_state: 'well'|'partial'|'uncontrolled' | null; severity_state: 'mild'|'moderate'|'severe' | null; from_qwen: boolean } {
+    const edit = stateEdits.get(c.id);
+    if (edit) {
+      return {
+        control_state: edit.control_state ?? null,
+        severity_state: edit.severity_state ?? null,
+        from_qwen: edit.from_qwen,
+      };
+    }
+    return { control_state: c.control_state, severity_state: c.severity_state, from_qwen: false };
+  }
+
+  // v3.9.5 — set a control state for a chip + persist immediately
+  async function setControl(c: ApiComorbidity, value: 'well'|'partial'|'uncontrolled' | null) {
+    setStateEdits((cur) => {
+      const next = new Map(cur);
+      const prev = next.get(c.id) ?? {};
+      next.set(c.id, { ...prev, control_state: value, from_qwen: false });
+      return next;
+    });
+    try {
+      await fetch(`/api/patients/${patientId}/comorbidities/${c.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ control_state: value }),
+      });
+    } catch { /* soft-fail */ }
+  }
+
+  async function setSeverity(c: ApiComorbidity, value: 'mild'|'moderate'|'severe' | null) {
+    setStateEdits((cur) => {
+      const next = new Map(cur);
+      const prev = next.get(c.id) ?? {};
+      next.set(c.id, { ...prev, severity_state: value, from_qwen: false });
+      return next;
+    });
+    try {
+      await fetch(`/api/patients/${patientId}/comorbidities/${c.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ severity_state: value }),
+      });
+    } catch { /* soft-fail */ }
+  }
 
   const excludeCatalogIds = useMemo(() => {
     const s = new Set<string>();
@@ -309,29 +413,85 @@ export function ComorbidityEditModal({
                     <div className="mb-3">
                       <div className="mb-1 text-[10px] uppercase tracking-wider text-even-ink-400">Active</div>
                       <ul className="divide-y divide-even-ink-50 overflow-hidden rounded-md border border-even-ink-100 bg-white">
-                        {[...activeExisting, ...willUnresolve].map((c) => (
-                          <li key={c.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
-                            <div className="flex min-w-0 flex-1 items-baseline gap-2">
-                              <span className="shrink-0 font-mono text-xs font-semibold text-even-navy">{c.code}</span>
-                              <span className="truncate">{c.label}</span>
-                              {c.tier === 'core' && <span className="shrink-0 rounded-full bg-blue-50 px-1.5 py-0 text-[10px] text-blue-700 ring-1 ring-blue-200">core</span>}
-                              {c.tier === 'extended' && <span className="shrink-0 rounded-full bg-violet-50 px-1.5 py-0 text-[10px] text-violet-700 ring-1 ring-violet-200">ext</span>}
-                              {c.triggers_extended_capture && <span className="shrink-0 text-[10px] text-amber-600" title="High-impact disease — gateways extended capture">⚡</span>}
-                            </div>
-                            <select
-                              value={(pendingOnsetEdits.get(c.id) ?? c.onset_date ?? '').slice(0, 4)}
-                              onChange={(e) => setOnsetEdit(c.id, e.target.value)}
-                              className="rounded-md border border-even-ink-200 bg-white px-2 py-1 text-xs"
-                            >
-                              <option value="">Unknown</option>
-                              {YEAR_OPTIONS.slice(0, 60).map((y) => <option key={y} value={y}>{y}</option>)}
-                            </select>
-                            <button
-                              onClick={() => toggleResolve(c.id, c.is_resolved)}
-                              className="rounded-md px-2 py-1 text-xs text-even-ink-400 hover:bg-rose-50 hover:text-rose-600"
-                            >Mark resolved</button>
-                          </li>
-                        ))}
+                        {[...activeExisting, ...willUnresolve].map((c) => {
+                          const eff = effectiveState(c);
+                          const showControl = (c.captured_as ?? '').includes('control');
+                          const showSeverity = (c.captured_as ?? '').includes('severity');
+                          const sugg = stateSuggestions.find((x) => x.comorbidity_id === c.id);
+                          return (
+                            <li key={c.id} className="flex flex-col gap-1.5 px-3 py-2 text-sm">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="flex min-w-0 flex-1 items-baseline gap-2">
+                                  <span className="shrink-0 font-mono text-xs font-semibold text-even-navy">{c.code}</span>
+                                  <span className="truncate">{c.label}</span>
+                                  {c.tier === 'core' && <span className="shrink-0 rounded-full bg-blue-50 px-1.5 py-0 text-[10px] text-blue-700 ring-1 ring-blue-200">core</span>}
+                                  {c.tier === 'extended' && <span className="shrink-0 rounded-full bg-violet-50 px-1.5 py-0 text-[10px] text-violet-700 ring-1 ring-violet-200">ext</span>}
+                                  {c.triggers_extended_capture && <span className="shrink-0 text-[10px] text-amber-600" title="High-impact disease — gateways extended capture">⚡</span>}
+                                </div>
+                                <select
+                                  value={(pendingOnsetEdits.get(c.id) ?? c.onset_date ?? '').slice(0, 4)}
+                                  onChange={(e) => setOnsetEdit(c.id, e.target.value)}
+                                  className="rounded-md border border-even-ink-200 bg-white px-2 py-1 text-xs"
+                                >
+                                  <option value="">Unknown</option>
+                                  {YEAR_OPTIONS.slice(0, 60).map((y) => <option key={y} value={y}>{y}</option>)}
+                                </select>
+                                <button
+                                  onClick={() => toggleResolve(c.id, c.is_resolved)}
+                                  className="rounded-md px-2 py-1 text-xs text-even-ink-400 hover:bg-rose-50 hover:text-rose-600"
+                                >Mark resolved</button>
+                              </div>
+                              {(showControl || showSeverity) && (
+                                <div className="flex flex-wrap items-center gap-2 pl-1">
+                                  {showControl && (
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[10px] uppercase tracking-wider text-even-ink-400">Control</span>
+                                      {(['well','partial','uncontrolled'] as const).map((v) => {
+                                        const active = eff.control_state === v;
+                                        const tone = v === 'well' ? 'bg-emerald-100 text-emerald-800 ring-emerald-300' : v === 'partial' ? 'bg-amber-100 text-amber-800 ring-amber-300' : 'bg-rose-100 text-rose-800 ring-rose-300';
+                                        return (
+                                          <button
+                                            key={v}
+                                            type="button"
+                                            onClick={() => void setControl(c, active ? null : v)}
+                                            className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 transition ${active ? tone : 'bg-white text-even-ink-500 ring-even-ink-200 hover:ring-even-ink-300'}`}
+                                          >
+                                            {v}
+                                          </button>
+                                        );
+                                      })}
+                                      {eff.from_qwen && eff.control_state && (
+                                        <span className="text-[10px] text-violet-600" title={sugg?.rationale ?? 'Qwen-suggested from assessment'}>✨ suggested</span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {showSeverity && (
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[10px] uppercase tracking-wider text-even-ink-400">Severity</span>
+                                      {(['mild','moderate','severe'] as const).map((v) => {
+                                        const active = eff.severity_state === v;
+                                        const tone = v === 'mild' ? 'bg-sky-100 text-sky-800 ring-sky-300' : v === 'moderate' ? 'bg-amber-100 text-amber-800 ring-amber-300' : 'bg-rose-100 text-rose-800 ring-rose-300';
+                                        return (
+                                          <button
+                                            key={v}
+                                            type="button"
+                                            onClick={() => void setSeverity(c, active ? null : v)}
+                                            className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 transition ${active ? tone : 'bg-white text-even-ink-500 ring-even-ink-200 hover:ring-even-ink-300'}`}
+                                          >
+                                            {v}
+                                          </button>
+                                        );
+                                      })}
+                                      {eff.from_qwen && eff.severity_state && (
+                                        <span className="text-[10px] text-violet-600" title={sugg?.rationale ?? 'Qwen-suggested from assessment'}>✨ suggested</span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
                       </ul>
                     </div>
                   )}

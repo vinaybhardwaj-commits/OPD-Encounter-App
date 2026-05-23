@@ -278,6 +278,7 @@ export function ComorbidityBand({
           patientName={patientName}
           patientAge={patientAge}
           patientSex={patientSex}
+          encounterId={encounterId}
           onClose={() => setModalOpen(false)}
           onSaved={async () => { setModalOpen(false); await reload(); }}
         />

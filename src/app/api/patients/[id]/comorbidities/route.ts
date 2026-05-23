@@ -45,11 +45,16 @@ export async function GET(
         added_by_name: string | null;
         added_at: string;
         updated_at: string;
+        control_state: 'well' | 'partial' | 'uncontrolled' | null;
+        severity_state: 'mild' | 'moderate' | 'severe' | null;
+        state_updated_at: string | null;
       }>(
         `SELECT pc.id, pc.code, pc.label, pc.onset_date::text AS onset_date,
                 pc.is_resolved, pc.resolved_at::text AS resolved_at,
                 pc.added_by_doctor_id, d.name AS added_by_name,
-                pc.added_at::text AS added_at, pc.updated_at::text AS updated_at
+                pc.added_at::text AS added_at, pc.updated_at::text AS updated_at,
+                pc.control_state, pc.severity_state,
+                pc.state_updated_at::text AS state_updated_at
          FROM patient_comorbidities pc
          LEFT JOIN doctors d ON d.id = pc.added_by_doctor_id
          WHERE pc.patient_id = $1
@@ -91,10 +96,15 @@ export async function GET(
     // Build tier input from active comorbidities
     const active = annotated.filter((c) => !c.is_resolved);
     const activeCatalogIds = active.map((c) => c.catalog_id).filter((id): id is string => !!id);
+    // v3.9.5 — feed control_state='uncontrolled' + severity_state='severe' into tier algorithm
+    const uncontrolledCatalogIds = active
+      .filter((c) => c.control_state === 'uncontrolled' || c.severity_state === 'severe')
+      .map((c) => c.catalog_id)
+      .filter((id): id is string => !!id);
 
     const tierBreakdown = computeTier({
       activeCatalogIds,
-      uncontrolledCatalogIds: [], // v3.9.5+
+      uncontrolledCatalogIds, // v3.9.5
       patient_age_years: patRes.rows[0].age_years,
       hospitalizedLast6Mo: (admitRes.rows[0]?.n ?? 0) > 0,
       edVisitsLast12Mo: 0,         // v3.9.6+

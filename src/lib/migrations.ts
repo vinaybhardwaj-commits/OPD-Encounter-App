@@ -1310,6 +1310,56 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN IF NOT EXISTS rx_comorbidity_overrides JSONB DEFAULT '[]'::jsonb;
     `,
   },
+  {
+    version: 32,
+    name: 'v3_9_5_comorbidity_control_severity_state',
+    sql: `
+      -- v3.9.5 — capture control_state + severity_state per patient
+      -- comorbidity, per the EHS Comorbidity Catalog v1.0 captured_as
+      -- dimension. Optional fields: only conditions with
+      -- captured_as containing 'control' or 'severity' should fill these.
+      --
+      -- control_state values: 'well' | 'partial' | 'uncontrolled' | NULL
+      -- severity_state values: 'mild' | 'moderate' | 'severe' | NULL
+      --
+      -- state_updated_at + state_updated_by_doctor_id form an audit
+      -- trail so we know when the assessment was last made.
+      ALTER TABLE patient_comorbidities
+        ADD COLUMN IF NOT EXISTS control_state TEXT;
+      ALTER TABLE patient_comorbidities
+        ADD COLUMN IF NOT EXISTS severity_state TEXT;
+      ALTER TABLE patient_comorbidities
+        ADD COLUMN IF NOT EXISTS state_updated_at TIMESTAMPTZ;
+      ALTER TABLE patient_comorbidities
+        ADD COLUMN IF NOT EXISTS state_updated_by_doctor_id UUID
+        REFERENCES doctors(id) ON DELETE SET NULL;
+
+      -- Free-text constraint via CHECK so writes can't store garbage.
+      DO $$
+      BEGIN
+        BEGIN
+          ALTER TABLE patient_comorbidities
+            ADD CONSTRAINT patient_comorbidities_control_state_check
+            CHECK (control_state IS NULL OR control_state IN ('well','partial','uncontrolled'));
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END;
+        BEGIN
+          ALTER TABLE patient_comorbidities
+            ADD CONSTRAINT patient_comorbidities_severity_state_check
+            CHECK (severity_state IS NULL OR severity_state IN ('mild','moderate','severe'));
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END;
+      END $$;
+
+      -- Cache for Qwen-suggested states (mirrors v3.5a/v3.8/v3.9.3 shape)
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ai_suggested_comorbidity_states JSONB;
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ai_suggested_comorbidity_states_generated_at TIMESTAMPTZ;
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS ai_suggested_comorbidity_states_context_hash TEXT;
+    `,
+  },
 ];
 
 /**
