@@ -1290,6 +1290,26 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN IF NOT EXISTS ai_suggested_comorbidities_context_hash TEXT;
     `,
   },
+  {
+    version: 31,
+    name: 'v3_9_4_rx_comorbidity_overrides',
+    sql: `
+      -- v3.9.4 — Rx-comorbidity coherence: per-encounter audit log of
+      -- doctor decisions when a warning fires (drug X usually treats
+      -- comorbidity Y, but patient lacks Y on file).
+      --
+      -- Each entry: { drug_name, comorbidity_code, comorbidity_label,
+      --                decision: 'added' | 'overridden',
+      --                reason?: string, source: 'static' | 'qwen',
+      --                confidence: number, at: ISO timestamp }
+      --
+      -- Warnings themselves are NOT cached server-side — they regenerate
+      -- on demand from prescription_lines (cheap; static map is sub-ms,
+      -- Qwen fallback only for unknown drugs).
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS rx_comorbidity_overrides JSONB DEFAULT '[]'::jsonb;
+    `,
+  },
 ];
 
 /**

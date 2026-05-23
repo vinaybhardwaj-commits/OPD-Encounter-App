@@ -93,6 +93,16 @@ type PatchBody = {
   follow_up_days?: number | null;
   referral_target?: string | null;
   disposition_label_override?: string | null;
+  rx_comorbidity_overrides?: Array<{
+    drug_name: string;
+    comorbidity_code: string;
+    comorbidity_label: string;
+    decision: 'added' | 'overridden';
+    reason?: string;
+    source: 'static' | 'qwen';
+    confidence: number;
+    at: string;
+  }>;
 };
 
 const ALLOWED_DISPOSITIONS = new Set([
@@ -153,6 +163,8 @@ export async function PATCH(
   if ('referral_target' in body) push('referral_target', body.referral_target);
   if ('disposition_label_override' in body)
     push('disposition_label_override', body.disposition_label_override);
+  if ('rx_comorbidity_overrides' in body)
+    push('rx_comorbidity_overrides', JSON.stringify(body.rx_comorbidity_overrides ?? []), '::jsonb');
 
   if (sets.length === 0) {
     return NextResponse.json({ ok: true, encounter: existing, noop: true });

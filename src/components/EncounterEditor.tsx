@@ -29,6 +29,7 @@ import { ExtractIcd10FromAssessmentButton } from './ExtractIcd10FromAssessmentBu
 import { DictateButton } from './DictateButton';
 import { PrescriptionCompose } from './PrescriptionCompose';
 import type { PrescriptionLine } from './DrugRow';
+import { useRxCoherence, RxCoherencePanel, type OverrideRecord } from './RxCoherencePanel';
 import { AmbientRecorder } from './AmbientRecorder';
 import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewer';
 import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
@@ -76,6 +77,17 @@ export type EncounterEditable = {
   follow_up_days: number | null;
   referral_target: string | null;
   disposition_label_override: string | null;
+  /** v3.9.4 — audit log of Rx ↔ comorbidity coherence decisions per encounter. */
+  rx_comorbidity_overrides?: Array<{
+    drug_name: string;
+    comorbidity_code: string;
+    comorbidity_label: string;
+    decision: 'added' | 'overridden';
+    reason?: string;
+    source: 'static' | 'qwen';
+    confidence: number;
+    at: string;
+  }> | null;
   prescription_lines: PrescriptionLine[];
   /** v2.2.1 — cached Qwen DDI scan output. Banner pre-renders from this. */
   ddi_findings?: unknown | null;
@@ -174,6 +186,26 @@ export function EncounterEditor({
   const [labModalOpen, setLabModalOpen] = useState(false);
   const [handoffModalOpen, setHandoffModalOpen] = useState(false);
   const [confirmModalOpen, setConfirmModalOpen] = useState(false);
+  // v3.9.4 — Rx ↔ comorbidity coherence
+  const [rxLinesMirror, setRxLinesMirror] = useState<PrescriptionLine[]>(initial.prescription_lines ?? []);
+  const [rxOverrides, setRxOverrides] = useState<OverrideRecord[]>(initial.rx_comorbidity_overrides ?? []);
+  const [coherenceModalOpen, setCoherenceModalOpen] = useState(false);
+  const rxCoherence = useRxCoherence({
+    encounterId: initial.id,
+    patientId: patient.id,
+    lines: rxLinesMirror,
+    initialOverrides: rxOverrides,
+    readOnly,
+    onOverridesChange: (next) => {
+      setRxOverrides(next);
+      // Best-effort persist; auto-save loop also picks it up via buildBody if wired
+      void fetch(`/api/encounters/${initial.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rx_comorbidity_overrides: next }),
+      }).catch(() => {});
+    },
+  });
 
   const [ccChips, setCcChips] = useState<string[]>(initial.chief_complaint_chips ?? []);
   const [cc, setCc] = useState(initial.chief_complaint_text ?? '');
@@ -340,7 +372,15 @@ export function EncounterEditor({
           body: JSON.stringify(buildBody()),
         });
       }
-      setConfirmModalOpen(true);
+      // v3.9.4 — refresh coherence one more time before submit, then
+      // either gate on the coherence modal or proceed to the normal
+      // confirm modal.
+      await rxCoherence.refresh();
+      if (rxCoherence.warnings.length > 0) {
+        setCoherenceModalOpen(true);
+      } else {
+        setConfirmModalOpen(true);
+      }
     } catch {
       setSubmitError('Network error. Try again.');
     } finally {
@@ -645,7 +685,10 @@ export function EncounterEditor({
           initialLines={initial.prescription_lines ?? []}
           readOnly={readOnly}
           initialDdi={initial.ddi_findings ?? null}
+          onLinesChange={setRxLinesMirror}
         />
+        {/* v3.9.4 — Rx ↔ comorbidity coherence inline panel */}
+        <RxCoherencePanel state={rxCoherence} mode="inline" />
       </Section>
 
       <Section label="Disposition" desc="Required to submit." required>
@@ -846,6 +889,18 @@ export function EncounterEditor({
           </div>
         </div>
       )}
+
+      {/* v3.9.4 — Rx coherence submit-time modal */}
+      <RxCoherencePanel
+        state={rxCoherence}
+        mode="modal"
+        open={coherenceModalOpen}
+        onClose={() => setCoherenceModalOpen(false)}
+        onConfirm={() => {
+          setCoherenceModalOpen(false);
+          setConfirmModalOpen(true);
+        }}
+      />
 
       <SendToDiagnosticsModal
         encounterId={initial.id}

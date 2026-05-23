@@ -43,6 +43,13 @@ export type PrescriptionComposeProps = {
    * the page refreshes without a prescription change.
    */
   initialDdi?: unknown | null;
+  /**
+   * v3.9.4 — fires whenever the lines[] state changes so the parent
+   * (EncounterEditor) can mirror it for the Rx ↔ comorbidity coherence
+   * panel + submit-time modal. Not used for persistence — debounced PUT
+   * to /prescription handles that.
+   */
+  onLinesChange?: (lines: PrescriptionLine[]) => void;
 };
 
 export function PrescriptionCompose({
@@ -50,6 +57,7 @@ export function PrescriptionCompose({
   initialLines,
   readOnly,
   initialDdi,
+  onLinesChange,
 }: PrescriptionComposeProps) {
   const [lines, setLines] = useState<PrescriptionLine[]>(initialLines);
   const [adderOpen, setAdderOpen] = useState(false);
@@ -90,6 +98,11 @@ export function PrescriptionCompose({
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [lines, encounterId, readOnly]);
+
+  // v3.9.4 — notify parent of lines mirror for Rx coherence panel
+  useEffect(() => {
+    onLinesChange?.(lines);
+  }, [lines, onLinesChange]);
 
   const addPickConfirmed = useCallback((drug: DrugSearchResult) => {
     setLines((cur) => {

@@ -53,6 +53,17 @@ type Row = EncounterEditable & {
   handoff_flagged_at: string | null; // = encounters.updated_at at flag time
   contributors_json: Array<{ doctor_id: string; joined_at: string; via: string }> | null;
   section_editors: Record<string, { doctor_id: string; edited_at: string }> | null;
+  // v3.9.4 — Rx ↔ comorbidity coherence audit log
+  rx_comorbidity_overrides: Array<{
+    drug_name: string;
+    comorbidity_code: string;
+    comorbidity_label: string;
+    decision: 'added' | 'overridden';
+    reason?: string;
+    source: 'static' | 'qwen';
+    confidence: number;
+    at: string;
+  }> | null;
   prev_owner_name: string | null;
 };
 
@@ -96,6 +107,7 @@ export default async function EncounterPage({
        e.updated_at::text AS handoff_flagged_at,
        e.contributors_json,
        e.section_editors,
+       e.rx_comorbidity_overrides,
        (
          SELECT d2.name FROM doctors d2
          WHERE d2.id = (e.contributors_json->0->>'doctor_id')::uuid
@@ -368,6 +380,7 @@ export default async function EncounterPage({
             prescription_lines: prescriptionLines,
             ddi_findings: row.ddi_findings ?? null,
             ddx_findings: row.ddx_findings ?? null,
+            rx_comorbidity_overrides: row.rx_comorbidity_overrides ?? null,
           }}
         />
       </section>
