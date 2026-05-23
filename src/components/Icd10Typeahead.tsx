@@ -11,7 +11,7 @@
  * Simpler than the drug picker — no schedule chips, no LASA, no
  * high-risk badge. Just code (mono) + label.
  */
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { Icd10Code } from '@/lib/icd10';
 
 type ApiResponse = {
@@ -56,7 +56,7 @@ export function Icd10Typeahead({
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const excludeSet = new Set(excludeCodes);
+  const excludeSet = useMemo(() => new Set(excludeCodes), [excludeCodes]);
 
   useEffect(() => {
     const q = query.trim();
@@ -147,6 +147,9 @@ export function Icd10Typeahead({
       setQwenError(`Network error: ${msg}`);
     } finally {
       setQwenLoading(false);
+      // v3.8.1 P2 fix — keep keyboard focus in the typeahead after Qwen returns
+      // so the doctor can refine the search without re-clicking.
+      inputRef.current?.focus();
     }
   }, [encounterId, query, qwenLoading]);
 
@@ -186,6 +189,7 @@ export function Icd10Typeahead({
   const showPanel = open && (loading || results.length > 0 || query.trim().length >= 1);
 
   return (
+    <div className="space-y-2">
     <div className="relative">
       <div className="flex gap-2">
         <input
@@ -215,6 +219,14 @@ export function Icd10Typeahead({
         {encounterId && (
           <button
             type="button"
+            // v3.8.1 P2 fix — preventDefault on mousedown stops the input from
+            // blurring (and from triggering the onBlur close-timeout) when the
+            // button is clicked. Without this, the absolute dropdown closes
+            // mid-Qwen-wait and the Qwen result block renders into a layout
+            // gap the input briefly vacated, making it appear as if the input
+            // unmounted. The input was always rendered — it was just being
+            // pushed around by the dropdown collapse.
+            onMouseDown={(e) => e.preventDefault()}
             onClick={submitQwen}
             disabled={qwenLoading || query.trim().length < 2}
             title="Ask Qwen to interpret this as an ICD-10 code (handles shorthand like 'T2DM' or 'HTN uncontrolled')"
@@ -280,6 +292,7 @@ export function Icd10Typeahead({
           )}
         </div>
       )}
+    </div>{/* /relative */}
 
       {/* v3.8 — Qwen NLP suggestions block (only when encounterId set) */}
       {encounterId && qwenLoading && (
@@ -342,7 +355,7 @@ export function Icd10Typeahead({
           {qwenError}
         </div>
       )}
-    </div>
+    </div>{/* /space-y-2 outer wrapper */}
   );
 }
 
