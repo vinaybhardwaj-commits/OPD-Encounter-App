@@ -22,6 +22,7 @@ import { useRouter } from 'next/navigation';
 import { CC_CHIPS } from '@/lib/cc-chips';
 import { lookupIcd10 } from '@/lib/icd10';
 import { Icd10Typeahead } from './Icd10Typeahead';
+import { ComorbidityBand } from './ComorbidityBand';
 import { Icd10SuggestedChips } from './Icd10SuggestedChips';
 import { ExtractIcd10FromAssessmentButton } from './ExtractIcd10FromAssessmentButton';
 import { DictateButton } from './DictateButton';
@@ -108,6 +109,7 @@ const DISPOSITIONS: { value: Disposition; label: string; hint: string }[] = [
 ];
 
 export type EncounterPatient = {
+  id: string;
   name: string;
   mrn: string;
   age_years: number;
@@ -373,6 +375,17 @@ export function EncounterEditor({
         />
       )}
 
+
+      {/* v3.9.1 — Comorbidity band + tier badge. Sits at the very top of
+          the editor working area so it sets context for everything below.
+          Per v3.9 PRD §4.1 placement decision. */}
+      <ComorbidityBand
+        patientId={patient.id}
+        patientName={patient.name}
+        patientAge={patient.age_years}
+        patientSex={patient.sex}
+        readOnly={readOnly}
+      />
       <Section
         label="Chief complaint"
         desc="Tap chips for the common shortcuts. Add detail in the textarea."

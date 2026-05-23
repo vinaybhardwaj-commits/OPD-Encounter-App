@@ -21,6 +21,8 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { TierBadge } from './TierBadge';
+import type { TierBreakdown } from '@/lib/comorbidity-tier';
 
 // -----------------------------------------------------------------------------
 // Types (subset of patient-summary.ts to avoid a server-only import)
@@ -184,7 +186,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
             recomputing={recomputing}
             error={error}
           />
-          <Problems problems={props.summary.problems} />
+          {/* v3.9.1 — canonical comorbidities + panel tier (replaces auto-derived <Problems>). */}
+          <Comorbidities patientId={props.patientId} />
           <Allergies items={props.summary.allergies} />
           {props.labTrends && props.labTrends.length > 0 && (
             <LabTrends trends={props.labTrends} />
@@ -335,6 +338,80 @@ function Skeleton({ lines }: { lines: number }) {
           style={{ width: `${100 - i * 15}%` }}
         />
       ))}
+    </div>
+  );
+}
+
+function Comorbidities({ patientId }: { patientId: string }) {
+  type ApiComorbidity = {
+    id: string;
+    code: string;
+    label: string;
+    is_resolved: boolean;
+    onset_date: string | null;
+    tier: 'core' | 'extended' | null;
+    triggers_extended_capture: boolean;
+  };
+  const [items, setItems] = useState<ApiComorbidity[]>([]);
+  const [tier, setTier] = useState<TierBreakdown | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/patients/${patientId}/comorbidities`);
+        const json = await res.json();
+        if (!cancel && json.ok) {
+          setItems(json.comorbidities);
+          setTier(json.tier);
+        }
+      } finally { if (!cancel) setLoading(false); }
+    })();
+    return () => { cancel = true; };
+  }, [patientId]);
+
+  const active = items.filter((c) => !c.is_resolved);
+
+  if (loading) {
+    return (
+      <div className="mb-3 rounded-md border border-even-ink-100 bg-white p-3 text-[11px] italic text-even-ink-400">
+        Loading comorbidities…
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-3 rounded-md border border-even-ink-100 bg-white p-3">
+      <div className="mb-2 flex items-baseline justify-between">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-even-ink-500">
+          Comorbidities {active.length > 0 && `(${active.length})`}
+        </p>
+        {tier && <TierBadge breakdown={tier} size="sm" />}
+      </div>
+      {active.length === 0 ? (
+        <p className="text-[11px] italic text-even-ink-400">No comorbidities recorded. Add via the band at the top of the encounter.</p>
+      ) : (
+        <ul className="space-y-1">
+          {active.slice(0, 6).map((c) => (
+            <li key={c.id} className="text-xs">
+              <div className="flex items-baseline gap-1.5">
+                <span className="shrink-0 font-mono text-[10px] font-semibold text-even-navy">{c.code}</span>
+                <span className="truncate text-even-navy">{c.label}</span>
+                {c.onset_date && (
+                  <span className="shrink-0 text-[9px] text-even-ink-400">· {c.onset_date.slice(0, 4)}</span>
+                )}
+                {c.triggers_extended_capture && (
+                  <span className="shrink-0 text-[9px] text-amber-600" title="Gateways extended catalog">⚡</span>
+                )}
+              </div>
+            </li>
+          ))}
+          {active.length > 6 && (
+            <li className="text-[10px] italic text-even-ink-400">+{active.length - 6} more · expand band above</li>
+          )}
+        </ul>
+      )}
     </div>
   );
 }

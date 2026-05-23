@@ -27,7 +27,8 @@ import { loadLabTrends } from '@/lib/lab-trends';
 export const dynamic = 'force-dynamic';
 
 type Row = EncounterEditable & {
-  patient_id: string;
+  patient_id: string;  patient_id: string;
+
   patient_name: string;
   patient_mrn: string;
   patient_age_years: number;
@@ -101,6 +102,7 @@ export default async function EncounterPage({
            AND d2.id <> e.doctor_id
          LIMIT 1
        ) AS prev_owner_name,
+       p.id AS patient_id,
        p.name AS patient_name,
        p.mrn AS patient_mrn,
        p.age_years AS patient_age_years,
@@ -336,6 +338,7 @@ export default async function EncounterPage({
 
         <EncounterEditor
           patient={{
+            id: row.patient_id,
             name: row.patient_name,
             mrn: row.patient_mrn,
             age_years: row.patient_age_years,
