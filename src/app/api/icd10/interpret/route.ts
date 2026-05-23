@@ -72,7 +72,7 @@ export async function POST(req: Request) {
     }
     if (!authed) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   
-    const body = (await req.json()) as { free_text?: string; encounter_id?: string };
+    const body = (await req.json()) as { free_text?: string; encounter_id?: string; patient_id?: string };
     const freeText = (body.free_text ?? '').trim();
     if (freeText.length < 2) {
       return NextResponse.json({ ok: true, suggestions: [], note: 'too_short' });
@@ -81,6 +81,7 @@ export async function POST(req: Request) {
     // Optional encounter context (improves disambiguation but not required)
     let visitReason = '';
     let problems: string[] = [];
+    let derivedPatientId: string | null = null;
     if (body.encounter_id && /^[0-9a-f-]{36}$/i.test(body.encounter_id)) {
       const encRes = await pool.query<{
         patient_id: string;
@@ -93,6 +94,7 @@ export async function POST(req: Request) {
       );
       if (encRes.rows.length > 0) {
         const enc = encRes.rows[0];
+        derivedPatientId = enc.patient_id;
         visitReason = (enc.intake_visit_reason || enc.chief_complaint_text || '').trim();
         const probRes = await pool.query<{ summary: { problems?: string[] } | null }>(
           `SELECT summary FROM patient_summaries WHERE patient_id = $1 LIMIT 1`,
@@ -102,9 +104,10 @@ export async function POST(req: Request) {
       }
     }
   
-    // v3.9.1b — comorbidity-aware prompt context (when patient_id provided)
-  const comorbidityCtx = body.patient_id
-    ? await loadComorbidityContext(body.patient_id).catch(() => null)
+    // v3.9.1b — comorbidity-aware prompt context (when patient_id provided directly OR derivable from encounter_id)
+  const ctxPatientId = body.patient_id ?? derivedPatientId;
+  const comorbidityCtx = ctxPatientId
+    ? await loadComorbidityContext(ctxPatientId).catch(() => null)
     : null;
 
   const userMessage = JSON.stringify({
