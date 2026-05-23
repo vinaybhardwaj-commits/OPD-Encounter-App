@@ -121,7 +121,7 @@ export function DiagnosticPreStageModal({
         <div className="grid flex-1 grid-cols-1 gap-4 overflow-hidden px-5 py-4 lg:grid-cols-[1.4fr_1fr]">
           {/* LEFT — search + bundles */}
           <div className="space-y-3 overflow-y-auto pr-2">
-            <BundlePickerChips onPick={(rows) => rows.forEach((r) => add(r))} alreadyInCart={codes} />
+            <BundlePickerChips onPick={(rows) => rows.forEach((r) => add({ ...r, patient_instructions: null, synonyms: [] } as CatalogRow))} alreadyInCart={codes} />
             <div className="rounded-lg border border-even-ink-100 bg-even-ink-50/30 p-3">
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-even-ink-500">
                 Search all 2,334 tests
