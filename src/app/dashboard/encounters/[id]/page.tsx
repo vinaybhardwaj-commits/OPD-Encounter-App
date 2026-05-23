@@ -27,7 +27,7 @@ import { loadLabTrends } from '@/lib/lab-trends';
 export const dynamic = 'force-dynamic';
 
 type Row = EncounterEditable & {
-  patient_id: string;  patient_id: string;
+  patient_id: string;
 
   patient_name: string;
   patient_mrn: string;
