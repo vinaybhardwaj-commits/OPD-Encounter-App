@@ -1360,6 +1360,34 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN IF NOT EXISTS ai_suggested_comorbidity_states_context_hash TEXT;
     `,
   },
+  {
+    version: 33,
+    name: 'v3_9_6_patient_tier_override',
+    sql: `
+      -- v3.9.6 — clinician override of the computed panel tier.
+      -- Auto-tier is computed from active comorbidities + modifiers;
+      -- the override (when set) wins. Stamped with doctor + at for audit.
+      ALTER TABLE patients
+        ADD COLUMN IF NOT EXISTS tier_override_state TEXT;
+      ALTER TABLE patients
+        ADD COLUMN IF NOT EXISTS tier_override_reason TEXT;
+      ALTER TABLE patients
+        ADD COLUMN IF NOT EXISTS tier_override_by_doctor_id UUID
+        REFERENCES doctors(id) ON DELETE SET NULL;
+      ALTER TABLE patients
+        ADD COLUMN IF NOT EXISTS tier_override_at TIMESTAMPTZ;
+
+      DO $$
+      BEGIN
+        BEGIN
+          ALTER TABLE patients
+            ADD CONSTRAINT patients_tier_override_state_check
+            CHECK (tier_override_state IS NULL OR tier_override_state IN ('T0','T1','T2','T3'));
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END;
+      END $$;
+    `,
+  },
 ];
 
 /**

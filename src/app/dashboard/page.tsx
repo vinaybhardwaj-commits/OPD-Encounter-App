@@ -16,6 +16,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentDoctor } from '@/lib/auth';
 import { getQueueForDoctor, type QueueCard, type HandoffCard } from '@/lib/queue';
+import { loadQueueTiers, type QueueTier } from '@/lib/queue-tier';
 import { startEncounter, actionClaimHandoff } from './actions';
 import { PatientSearch } from '@/components/PatientSearch';
 import { QueueLive } from '@/components/QueueLive';
@@ -52,6 +53,15 @@ export default async function DashboardPage() {
   }
 
   const total = q.completed.length + q.ready_to_resume.length + q.at_diagnostics.length + q.waiting.length;
+
+  // v3.9.6 — batched tier per patient across all queue lanes
+  const allPatientIds = Array.from(new Set([
+    ...q.waiting.map((c) => c.patient_id),
+    ...q.ready_to_resume.map((c) => c.patient_id),
+    ...q.at_diagnostics.map((c) => c.patient_id),
+    ...q.completed.map((c) => c.patient_id),
+  ]));
+  const tiersByPatient = await loadQueueTiers(allPatientIds);
   const seenSoFar = q.completed.length;
   const today = new Date().toLocaleDateString('en-IN', {
     weekday: 'long',
@@ -130,6 +140,7 @@ export default async function DashboardPage() {
             subtitle="Diagnostics back. Tap to continue the encounter."
             tone="ready"
             cards={q.ready_to_resume}
+            tiersByPatient={tiersByPatient}
           />
         )}
 
@@ -147,6 +158,7 @@ export default async function DashboardPage() {
             subtitle="Encounter paused, test pending."
             tone="diagnostics"
             cards={q.at_diagnostics}
+            tiersByPatient={tiersByPatient}
           />
         )}
 
@@ -157,6 +169,7 @@ export default async function DashboardPage() {
             tone="completed"
             cards={q.completed}
             dim
+            tiersByPatient={tiersByPatient}
           />
         )}
       </section>
@@ -187,6 +200,37 @@ function Pill({
   );
 }
 
+/**
+ * v3.9.6 — small T0..T3 pill rendered on each queue card.
+ * Tone matches TierBadge so the dashboard and the encounter editor stay
+ * visually consistent. Hover title gives the breakdown.
+ */
+function TierPill({ tier }: { tier: QueueTier }) {
+  const label = `T${tier.tier}`;
+  const tone = tier.tier === 0
+    ? 'bg-blue-50 text-blue-800 ring-blue-200'
+    : tier.tier === 1
+    ? 'bg-amber-50 text-amber-800 ring-amber-200'
+    : tier.tier === 2
+    ? 'bg-rose-50 text-rose-800 ring-rose-200'
+    : 'bg-red-100 text-red-900 ring-red-300';
+  const detail = tier.active_count === 0
+    ? 'no comorbidities'
+    : `${tier.active_count} condition${tier.active_count === 1 ? '' : 's'}` +
+      (tier.uncontrolled_count > 0 ? ` · ${tier.uncontrolled_count} uncontrolled` : '');
+  const title = `Panel tier ${label}${tier.override_state ? ' (override)' : ''}\n${detail}\nScore ${tier.score}` +
+    (tier.trigger_reasons.length > 0 ? `\n${tier.trigger_reasons.join(' · ')}` : '');
+  return (
+    <span
+      title={title}
+      className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0 text-[10px] font-semibold ring-1 ${tone}`}
+    >
+      {label}
+      {tier.override_state && <span className="text-[8px]" title="Clinician override">✎</span>}
+    </span>
+  );
+}
+
 function Lane({
   title,
   subtitle,
@@ -194,10 +238,12 @@ function Lane({
   cards,
   startAction,
   dim,
+  tiersByPatient,
 }: {
   title: string;
   subtitle: string;
   tone: 'ready' | 'waiting' | 'diagnostics' | 'completed';
+  tiersByPatient?: Map<string, QueueTier>;
   cards: QueueCard[];
   startAction?: (formData: FormData) => Promise<void>;
   dim?: boolean;
@@ -219,9 +265,9 @@ function Lane({
       <ul className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {cards.map((c) =>
           startAction && !c.encounter_id ? (
-            <StartCard key={c.patient_id} card={c} action={startAction} tone={tone} />
+            <StartCard key={c.patient_id} card={c} action={startAction} tone={tone} tier={tiersByPatient?.get(c.patient_id) ?? null} />
           ) : (
-            <ResumeCard key={c.patient_id} card={c} tone={tone} />
+            <ResumeCard key={c.patient_id} card={c} tone={tone} tier={tiersByPatient?.get(c.patient_id) ?? null} />
           ),
         )}
       </ul>
@@ -273,19 +319,30 @@ function cardSurface(tone: 'ready' | 'waiting' | 'diagnostics' | 'completed') {
   return 'border-even-ink-200 bg-white hover:border-even-navy-200';
 }
 
-function CardBody({ card, tone }: { card: QueueCard; tone: 'ready' | 'waiting' | 'diagnostics' | 'completed' }) {
+function CardBody({ card, tone, tier }: { card: QueueCard; tone: 'ready' | 'waiting' | 'diagnostics' | 'completed'; tier?: QueueTier | null }) {
   return (
     <div className="text-left">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="truncate text-sm font-semibold text-even-navy">
-          {card.name}
-        </span>
+        <div className="flex min-w-0 items-baseline gap-2">
+          {tier && <TierPill tier={tier} />}
+          <span className="truncate text-sm font-semibold text-even-navy">
+            {card.name}
+          </span>
+        </div>
         <span className="shrink-0 text-[11px] font-mono text-even-ink-400">
           {card.age_years}{card.sex}
         </span>
       </div>
-      <div className="mt-1 text-[11px] text-even-ink-500 font-mono">
-        {card.mrn}
+      <div className="mt-1 flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-mono text-even-ink-500">{card.mrn}</span>
+        {tier && tier.active_count > 0 && (
+          <span className="text-[10px] text-even-ink-500">
+            {tier.active_count} cond{tier.active_count === 1 ? '' : 's'}
+            {tier.uncontrolled_count > 0 && (
+              <span className="ml-1 text-rose-600">· {tier.uncontrolled_count} uncontrolled</span>
+            )}
+          </span>
+        )}
       </div>
 
       {/* v2.0.5 — intake reason chip from CCE */}
@@ -405,10 +462,12 @@ function StartCard({
   card,
   action,
   tone,
+  tier,
 }: {
   card: QueueCard;
   action: (formData: FormData) => Promise<void>;
   tone: 'ready' | 'waiting' | 'diagnostics' | 'completed';
+  tier?: QueueTier | null;
 }) {
   return (
     <li>
@@ -419,7 +478,7 @@ function StartCard({
           className={`block w-full rounded-xl border p-4 text-left transition ${cardSurface(tone)}`}
           aria-label={`Start encounter for ${card.name}`}
         >
-          <CardBody card={card} tone={tone} />
+          <CardBody card={card} tone={tone} tier={tier} />
         </button>
       </form>
     </li>
@@ -429,9 +488,11 @@ function StartCard({
 function ResumeCard({
   card,
   tone,
+  tier,
 }: {
   card: QueueCard;
   tone: 'ready' | 'waiting' | 'diagnostics' | 'completed';
+  tier?: QueueTier | null;
 }) {
   return (
     <li>
@@ -439,7 +500,7 @@ function ResumeCard({
         href={card.encounter_id ? `/dashboard/encounters/${card.encounter_id}` : '/dashboard'}
         className={`block rounded-xl border p-4 transition ${cardSurface(tone)}`}
       >
-        <CardBody card={card} tone={tone} />
+        <CardBody card={card} tone={tone} tier={tier} />
       </Link>
     </li>
   );

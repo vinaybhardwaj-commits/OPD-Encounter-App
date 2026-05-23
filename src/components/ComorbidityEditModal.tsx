@@ -12,6 +12,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { TierBadge } from './TierBadge';
+import { TierOverridePopover, type TierOverrideValue } from './TierOverridePopover';
 import { ComorbiditySearch, type CatalogEntry } from './ComorbiditySearch';
 import type { TierBreakdown } from '@/lib/comorbidity-tier';
 
@@ -524,7 +525,15 @@ export function ComorbidityEditModal({
               <div className="text-xs font-semibold uppercase tracking-wider text-even-ink-500">Panel risk tier</div>
               {pendingTier ? (
                 <>
-                  <div><TierBadge breakdown={pendingTier} size="lg" /></div>
+                  <TierOverridePopover
+                    patientId={patientId}
+                    currentOverride={(pendingTier.override_applied ? (('T' + pendingTier.tier) as TierOverrideValue) : null)}
+                    computedTier={`T${pendingTier.tier}`}
+                    onSaved={() => { /* let parent reload by closing/reopening; cheap to just hint */ }}
+                  >
+                    <div><TierBadge breakdown={pendingTier} size="lg" /></div>
+                  </TierOverridePopover>
+                  <div className="text-[10px] text-even-ink-400">Click tier to override</div>
                   {dirty && <div className="text-[11px] italic text-even-ink-500">Tier will recompute on save.</div>}
                 </>
               ) : (
