@@ -32,6 +32,7 @@ import type { PrescriptionLine } from './DrugRow';
 import { useRxCoherence, RxCoherencePanel, type OverrideRecord } from './RxCoherencePanel';
 import { Section } from './encounter/Section';
 import { ShortcutsOverlay } from './encounter/ShortcutsOverlay';
+import { CommandPalette, type CommandAction } from './encounter/CommandPalette';
 import { AmbientRecorder } from './AmbientRecorder';
 import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewer';
 import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
@@ -215,17 +216,48 @@ export function EncounterEditor({
   // Ignores '?' when an input/textarea has focus so doctors can type a
   // literal question mark.
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showCommand, setShowCommand] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== '?') return;
-      const t = (e.target as HTMLElement | null);
-      const tag = t?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return;
-      e.preventDefault();
-      setShowShortcuts(true);
+      // ⌘K / Ctrl+K — command palette (allowed even when typing in inputs)
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setShowCommand((v) => !v);
+        return;
+      }
+      // ? — shortcuts overlay (only when no input/textarea focused)
+      if (e.key === '?') {
+        const t = e.target as HTMLElement | null;
+        const tag = t?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return;
+        e.preventDefault();
+        setShowShortcuts(true);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // v4.0.9 — command list for the palette. Recomputed when readOnly changes
+  // so the action set matches what the doctor can actually do.
+  const commands: CommandAction[] = useMemo(() => {
+    const scrollTo = (id: string) => {
+      const el = document.getElementById(id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+    const list: CommandAction[] = [
+      { id: 'jump-reason', group: 'Jump to', label: '1. Reason for visit', run: () => scrollTo('enc-section-reason') },
+      { id: 'jump-vitals', group: 'Jump to', label: 'Vitals', run: () => scrollTo('enc-section-vitals') },
+      { id: 'jump-exam', group: 'Jump to', label: '2. Exam findings', run: () => scrollTo('enc-section-exam') },
+      { id: 'jump-ddx', group: 'Jump to', label: '3. Differential', run: () => scrollTo('enc-section-differential') },
+      { id: 'jump-dx', group: 'Jump to', label: '4. Diagnostics', run: () => scrollTo('enc-section-diagnostics') },
+      { id: 'jump-assess', group: 'Jump to', label: '5. Assessment', run: () => scrollTo('enc-section-assessment') },
+      { id: 'jump-rx', group: 'Jump to', label: '6. Treatment', run: () => scrollTo('enc-section-treatment') },
+      { id: 'jump-plan', group: 'Jump to', label: '7. Plan', run: () => scrollTo('enc-section-plan') },
+      { id: 'act-shortcuts', group: 'Action', label: 'Show keyboard shortcuts', hint: '?', run: () => setShowShortcuts(true) },
+      { id: 'nav-queue', group: 'Navigation', label: 'Back to queue', hint: '← Queue', run: () => { window.location.href = '/dashboard'; } },
+    ];
+    return list;
   }, []);
   const [cc, setCc] = useState(initial.chief_complaint_text ?? '');
   const [exam, setExam] = useState(initial.exam_findings ?? '');
@@ -481,6 +513,7 @@ export function EncounterEditor({
       />
       <Section
         n={1}
+        id="enc-section-reason"
         label="Reason for visit"
         dictate={
           !readOnly
@@ -513,7 +546,7 @@ export function EncounterEditor({
         />
       </Section>
 
-      <Section label="Vitals">
+      <Section id="enc-section-vitals" label="Vitals">
         <VitalsPillRow
           vitals={vitals}
           onChange={(patch) => setVitals({ ...vitals, ...patch })}
@@ -523,6 +556,7 @@ export function EncounterEditor({
 
       <Section
         n={2}
+        id="enc-section-exam"
         label="Exam findings"
         dictate={
           !readOnly
@@ -550,6 +584,7 @@ export function EncounterEditor({
       {!readOnly && (
         <Section
           n={3}
+          id="enc-section-differential"
           label="Differential"
           collapsible
           encounterId={initial.id}
@@ -572,6 +607,7 @@ export function EncounterEditor({
       {!(readOnly || initial.status === 'completed') && (
         <Section
           n={4}
+          id="enc-section-diagnostics"
           label="Diagnostics"
           collapsible
           encounterId={initial.id}
@@ -586,6 +622,7 @@ export function EncounterEditor({
 
       <Section
         n={5}
+        id="enc-section-assessment"
         label="Assessment"
         dictate={
           !readOnly
@@ -712,6 +749,7 @@ export function EncounterEditor({
 
       <Section
         n={6}
+        id="enc-section-treatment"
         label="Treatment"
         dictate={!readOnly ? { encounterId: initial.id, section: 'prescription' } : undefined}
       >
@@ -726,7 +764,7 @@ export function EncounterEditor({
         <RxCoherencePanel state={rxCoherence} mode="inline" />
       </Section>
 
-      <Section n={7} label="Plan" required>
+      <Section id="enc-section-plan" n={7} label="Plan" required>
         {(() => {
           // PH.4: re-order the 6 standard buttons so the AI-recommended
           // one is leftmost, and stamp it with a violet dot.
@@ -970,6 +1008,8 @@ export function EncounterEditor({
 
       {/* v4.0.8 — keyboard shortcuts overlay (? key) */}
       <ShortcutsOverlay open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+      {/* v4.0.9 — command palette (⌘K / Ctrl+K) */}
+      <CommandPalette open={showCommand} onClose={() => setShowCommand(false)} commands={commands} />
     </div>
   );
 }

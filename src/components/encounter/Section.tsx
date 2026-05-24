@@ -23,6 +23,8 @@ import { DictateButton } from '../DictateButton';
 export type SectionProps = {
   /** Display heading (sentence case, e.g. 'Reason for visit', 'Vitals'). */
   label: string;
+  /** v4.0.9 — anchor id for jump-to-section / command palette navigation. */
+  id?: string;
   /** Optional numbered marker on the left (1, 2, 3, ...). Set to render the v4 flow markers. */
   n?: number;
   /** Marks the section as required for submission — shows a small * after the label. */
@@ -64,6 +66,7 @@ export type SectionProps = {
 
 export function Section({
   label,
+  id,
   n,
   required,
   actions,
@@ -98,7 +101,7 @@ export function Section({
   }, [collapsible]);
 
   return (
-    <section className="space-y-3">
+    <section id={id} className="space-y-3 scroll-mt-24">
       <header className="flex flex-wrap items-baseline justify-between gap-3">
         <div className="flex min-w-0 items-baseline gap-2">
           {typeof n === 'number' && (
