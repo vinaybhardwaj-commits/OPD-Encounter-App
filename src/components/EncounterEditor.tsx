@@ -569,7 +569,6 @@ export function EncounterEditor({
       <Section
         n={5}
         label="Assessment"
-        desc="Impression + ICD-10 codes."
         dictate={
           !readOnly
             ? {
@@ -674,8 +673,8 @@ export function EncounterEditor({
           value={assessment}
           onChange={(e) => setAssessment(e.target.value)}
           disabled={readOnly}
-          rows={2}
-          placeholder="e.g., Acute pharyngitis, likely viral."
+          rows={6}
+          placeholder="Your impression — likely diagnoses, certainty, what you're ruling out or considering."
           className={textareaCls}
         />
         {!readOnly && (

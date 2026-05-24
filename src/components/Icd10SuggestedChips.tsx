@@ -47,47 +47,45 @@ export function Icd10SuggestedChips({
 
   if (loading) {
     return (
-      <div className="rounded-md border border-violet-100 bg-violet-50/30 px-3 py-2 text-[11px] italic text-violet-700">
+      <p className="text-[11px] italic text-violet-700">
         Reading the encounter context for ICD-10 suggestions…
-      </div>
+      </p>
     );
   }
 
   if (!payload || payload.status === 'failed') return null;
   if (payload.findings.length === 0) return null;
 
+  // v4.0.6 — flat chip wall, no bordered card (matches Section 1 pattern).
   return (
-    <div className="rounded-md border border-violet-200 bg-violet-50/30 p-2">
-      <div className="mb-1.5 flex items-baseline gap-2">
-        <span className="text-[10px] uppercase tracking-wider text-violet-700">
-          ICD-10 · ✨ Suggested from context
-        </span>
-        {cached && <span className="text-[10px] text-even-ink-400">cached</span>}
-      </div>
-      <div className="flex flex-wrap gap-1.5">
-        {payload.findings.map((f) => {
-          const added = alreadyAddedCodes.has(f.code);
-          return (
-            <button
-              key={f.code}
-              type="button"
-              onClick={() => !added && onAdd({ code: f.code, label: f.label })}
-              disabled={added}
-              title={`${f.label}${f.rationale ? ' · ' + f.rationale : ''} · ${(f.confidence * 100).toFixed(0)}%`}
-              className={`inline-flex items-baseline gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-                added
-                  ? 'cursor-default border-even-ink-200 bg-even-ink-100 text-even-ink-400'
-                  : 'border-violet-200 bg-white text-even-navy hover:bg-violet-50'
-              }`}
-            >
-              <span>{added ? '✓' : '+'}</span>
-              <span className="font-mono font-semibold">{f.code}</span>
-              <span className="truncate max-w-[12rem] text-even-ink-600">{f.label}</span>
-              <span className="text-[10px] text-violet-700">{(f.confidence * 100).toFixed(0)}%</span>
-            </button>
-          );
-        })}
-      </div>
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+      <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-700">
+        <span aria-hidden>✨</span>
+        AI suggestions
+      </span>
+      {cached && <span className="text-[10px] text-even-ink-400">cached</span>}
+      {payload.findings.map((f) => {
+        const added = alreadyAddedCodes.has(f.code);
+        return (
+          <button
+            key={f.code}
+            type="button"
+            onClick={() => !added && onAdd({ code: f.code, label: f.label })}
+            disabled={added}
+            title={`${f.label}${f.rationale ? ' · ' + f.rationale : ''} · ${(f.confidence * 100).toFixed(0)}%`}
+            className={`inline-flex items-baseline gap-1.5 rounded-full px-2.5 py-1 text-xs transition ${
+              added
+                ? 'cursor-default bg-even-ink-50 text-even-ink-400 ring-1 ring-even-ink-200'
+                : 'bg-violet-50 text-violet-900 ring-1 ring-violet-300 hover:ring-violet-500'
+            }`}
+          >
+            <span>{added ? '✓' : '+'}</span>
+            <span className="font-mono font-semibold">{f.code}</span>
+            <span className="truncate max-w-[12rem] text-even-ink-600">{f.label}</span>
+            <span className="text-[10px] text-violet-700">{(f.confidence * 100).toFixed(0)}%</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
