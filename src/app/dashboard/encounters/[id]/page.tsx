@@ -11,6 +11,7 @@ import { notFound, redirect } from 'next/navigation';
 import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
 import { EncounterEditor, type EncounterEditable } from '@/components/EncounterEditor';
+import { AskTheChartRail } from '@/components/AskTheChartRail';
 import { EncounterLabResults } from '@/components/EncounterLabResults';
 import { VoiceQueryFab } from '@/components/VoiceQueryFab';
 import { HandoffBanner } from '@/components/HandoffBanner';
@@ -250,7 +251,9 @@ export default async function EncounterPage({
         </div>
       </header>
 
-      <section className="mx-auto max-w-3xl px-6 py-8">
+      <section className="mx-auto max-w-7xl px-6 py-8">
+        <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6">
+          <div className="min-w-0 max-w-3xl">
         <div className="mb-8 border-b border-even-ink-100 pb-6">
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
             <h1 className="text-2xl font-semibold tracking-tight text-even-navy">
@@ -383,6 +386,17 @@ export default async function EncounterPage({
             rx_comorbidity_overrides: row.rx_comorbidity_overrides ?? null,
           }}
         />
+          </div>
+          <div className="mt-6 lg:mt-0">
+            <div className="lg:sticky lg:top-6">
+              {/* v3.10.4 — Ask-the-chart right rail */}
+              <AskTheChartRail
+                encounterId={row.id}
+                readOnly={row.status === 'completed'}
+              />
+            </div>
+          </div>
+        </div>
       </section>
     </main>
   );
