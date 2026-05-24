@@ -18,6 +18,7 @@
  */
 import { NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
+import { kbHealth } from '@/lib/kb';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -57,6 +58,10 @@ export async function GET() {
       // ignore
     }
 
+    // v3.10.0 — also probe shared KB (Neon + Ollama tunnel). Soft-fail —
+    // these don't gate OPD's primary health; surfaced as extra fields.
+    const kbProbe = await kbHealth();
+
     return NextResponse.json(
       {
         ok: true,
@@ -71,6 +76,8 @@ export async function GET() {
           total_migrations,
           table_count,
         },
+        kb: kbProbe.kb_db,
+        llm: kbProbe.llm,
         build: {
           sha: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
           region: process.env.VERCEL_REGION ?? null,
