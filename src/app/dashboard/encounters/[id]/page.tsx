@@ -12,6 +12,8 @@ import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
 import { EncounterEditor, type EncounterEditable } from '@/components/EncounterEditor';
 import { AskTheChartRail } from '@/components/AskTheChartRail';
+import { EncounterTopBar } from '@/components/encounter/EncounterTopBar';
+import { PatientContextStrip } from '@/components/encounter/PatientContextStrip';
 import { EncounterLabResults } from '@/components/EncounterLabResults';
 import { VoiceQueryFab } from '@/components/VoiceQueryFab';
 import { HandoffBanner } from '@/components/HandoffBanner';
@@ -231,105 +233,61 @@ export default async function EncounterPage({
         encounters={panelData.encounters}
         labTrends={labTrends}
       />
-      <header className="border-b border-even-ink-100 bg-white">
-        <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-6 py-4">
-          <Link
-            href="/dashboard"
-            className="text-xs font-medium uppercase tracking-wider text-even-ink-500 hover:text-even-navy"
-          >
-            ← Back to queue
-          </Link>
-          <div className="flex items-center gap-3">
-            {/* v2.2.3 — push-to-talk voice query */}
-            {row.status !== 'completed' && (
-              <VoiceQueryFab encounterId={row.id} />
-            )}
-            <span className="text-[10px] font-mono text-even-ink-400">
-              {row.encounter_number} · {row.status.replace('_', ' ')}
-            </span>
-          </div>
-        </div>
-      </header>
+      {/* v4.0.1 — new EncounterTopBar replaces the legacy header */}
+      <EncounterTopBar
+        encounterId={row.id}
+        encounterNumber={row.encounter_number}
+        status={row.status as Parameters<typeof EncounterTopBar>[0]['status']}
+        startedAt={row.started_at ?? null}
+        patientName={row.patient_name}
+        patientAge={row.patient_age_years}
+        patientSex={row.patient_sex}
+      />
 
-      <section className="mx-auto max-w-7xl px-6 py-8">
+      {/* v4.0.1 — compact patient context strip replaces the patient
+          banner + lab orders banner + comorbidity banner cards */}
+      <PatientContextStrip
+        patientId={row.patient_id}
+        phoneE164={row.patient_phone_e164}
+        allergies={row.patient_allergies}
+        intakeVisitReason={row.intake_visit_reason}
+        triageNurseName={row.triage_nurse_name}
+        triageCompletedAt={row.triage_completed_at}
+        lastVisitAgo={null}
+      />
+
+      <section className="mx-auto max-w-7xl px-6 py-6">
         <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6">
           <div className="min-w-0 max-w-3xl">
-        <div className="mb-8 border-b border-even-ink-100 pb-6">
-          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight text-even-navy">
-              {row.patient_name}
-            </h1>
-            <p className="text-xs font-mono text-even-ink-400">
-              {row.patient_mrn}
-            </p>
-          </div>
-          <p className="mt-1 text-sm text-even-ink-500">
-            {row.patient_age_years}{row.patient_sex}
-            {row.patient_phone_e164 && (
-              <>
-                {' · '}
-                <span className="font-mono">{row.patient_phone_e164}</span>
-              </>
-            )}
-          </p>
-          {row.patient_allergies && (
-            <p className="mt-3 inline-flex items-center gap-1 rounded-md bg-even-pink-100 px-2 py-1 text-xs font-medium text-even-pink-800">
-              ⚠ Allergies: {row.patient_allergies}
-            </p>
-          )}
-
-          {/* v2.0.5 — CCE intake reason + triage attribution */}
-          {(row.intake_visit_reason || row.triage_completed_at) && (
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              {row.intake_visit_reason && (
-                <span className="inline-flex items-center gap-1 rounded-full border border-even-blue-200 bg-even-blue-50 px-2.5 py-1 text-xs font-medium text-even-blue-800">
-                  Reason: {row.intake_visit_reason}
+{/* v4.0.1 — patient name card removed; identity lives in EncounterTopBar + PatientContextStrip */}
+        {row.status === 'completed' && prescriptionMeta && (
+          <div className="mb-4 rounded-lg border border-even-blue-100 bg-even-blue-50/60 px-3 py-2.5 text-xs text-even-navy">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span className="font-semibold">Dispatched</span>
+                <span className="ml-1 font-mono text-[11px] text-even-ink-500">
+                  {prescriptionMeta.number}
                 </span>
-              )}
-              {row.triage_completed_at && row.triage_nurse_name && (
-                <span className="text-[11px] text-even-ink-500">
-                  Vitals captured by{' '}
-                  <span className="font-medium text-even-navy">
-                    {row.triage_nurse_name.replace(/^Nurse\s+/i, 'Nurse ')}
-                  </span>
-                  {' · '}
-                  {triageAgo(row.triage_completed_at)}
-                </span>
-              )}
-            </div>
-          )}
-
-          {row.status === 'completed' && prescriptionMeta && (
-            <div className="mt-4 rounded-lg border border-even-blue-100 bg-even-blue-50/60 px-3 py-2.5 text-xs text-even-navy">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <span className="font-semibold">Dispatched</span>
-                  <span className="ml-1 font-mono text-[11px] text-even-ink-500">
-                    {prescriptionMeta.number}
-                  </span>
-                  {prescriptionMeta.patient_sent_at && (
-                    <span className="ml-2 text-even-ink-500">
-                      · patient sent
-                    </span>
-                  )}
-                  {prescriptionMeta.pharmacy_sent_at && (
-                    <span className="text-even-ink-500"> · pharmacy sent</span>
-                  )}
-                </div>
-                {prescriptionMeta.has_pdf && (
-                  <Link
-                    href={`/api/prescriptions/${prescriptionMeta.id}/pdf`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 rounded-md border border-even-blue-300 bg-white px-3 py-1 text-[11px] font-semibold text-even-blue-700 hover:bg-even-blue-50"
-                  >
-                    View prescription PDF →
-                  </Link>
+                {prescriptionMeta.patient_sent_at && (
+                  <span className="ml-2 text-even-ink-500"> · patient sent</span>
+                )}
+                {prescriptionMeta.pharmacy_sent_at && (
+                  <span className="text-even-ink-500"> · pharmacy sent</span>
                 )}
               </div>
+              {prescriptionMeta.has_pdf && (
+                <Link
+                  href={`/api/prescriptions/${prescriptionMeta.id}/pdf`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 rounded-md border border-even-blue-300 bg-white px-3 py-1 text-[11px] font-semibold text-even-blue-700 hover:bg-even-blue-50"
+                >
+                  View prescription PDF →
+                </Link>
+              )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* v2.3 — Handoff banner. Renders when an unacknowledged
             handoff_note exists AND the viewing doctor is now the owner
@@ -344,10 +302,8 @@ export default async function EncounterPage({
           />
         )}
 
-        {/* v2.1.5 — doctor-side lab orders + results panel. Renders only
-            when the encounter has any lab orders; sits above the
-            EncounterEditor so abnormal flags are unmissable. */}
-        <div className="mb-6">
+        {/* v2.1.5 — doctor-side lab orders + results panel. */}
+        <div id="encounter-lab-results" className="mb-6">
           <EncounterLabResults encounterId={row.id} />
         </div>
 
