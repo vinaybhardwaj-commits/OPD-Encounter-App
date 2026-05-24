@@ -463,8 +463,7 @@ export function EncounterEditor({
       />
       <Section
         n={1}
-        label="Chief complaint"
-        desc="Tap chips for the common shortcuts. Add detail in the textarea."
+        label="Reason for visit"
         dictate={
           !readOnly
             ? {
@@ -490,8 +489,8 @@ export function EncounterEditor({
           value={cc}
           onChange={(e) => setCc(e.target.value)}
           disabled={readOnly}
-          rows={2}
-          placeholder="e.g., Sore throat 3 days, low-grade fever"
+          rows={4}
+          placeholder="Add detail — onset, duration, severity, what brought them in today."
           className={`mt-3 ${textareaCls}`}
         />
       </Section>
@@ -1159,81 +1158,79 @@ function CcChipGrid({
 }) {
   const sel = new Set(selected);
 
-  // PH.4: re-order each bucket using the patient's Qwen rankings.
-  // Chips not in `ccRankings` keep their original relative position
-  // after the ranked ones.
+  // v4.0.3: flat chip wall with subtle text-only category dividers.
+  // No more nested bordered boxes. AI ranking still re-orders within
+  // each category band; chips not in `ccRankings` keep original position.
   const rankIndex = new Map<string, number>();
   ccRankings.forEach((label, i) => rankIndex.set(label, i));
-  const orderInBucket = (a: { label: string }, b: { label: string }) => {
+  const orderInBand = (a: { label: string }, b: { label: string }) => {
     const ai = rankIndex.has(a.label) ? rankIndex.get(a.label)! : Number.POSITIVE_INFINITY;
     const bi = rankIndex.has(b.label) ? rankIndex.get(b.label)! : Number.POSITIVE_INFINITY;
     return ai - bi;
   };
 
-  const buckets = [
+  const bands = [
     { name: 'Acute', cat: 'acute' as const },
     { name: 'Follow-up', cat: 'chronic' as const },
     { name: 'Routine', cat: 'routine' as const },
   ];
 
-  // De-dupe additions against the standard catalogue and against each other.
+  // De-dupe AI additions against the standard catalogue and each other.
   const standardSet = new Set(CC_CHIPS.map((c) => c.label));
   const seenAdd = new Set<string>();
   const additions = ccAdditions.filter((label) => {
     if (!label || standardSet.has(label)) return false;
-    const k = label;
-    if (seenAdd.has(k)) return false;
-    seenAdd.add(k);
+    if (seenAdd.has(label)) return false;
+    seenAdd.add(label);
     return true;
   });
 
   return (
-    <div className="space-y-3 rounded-xl border border-even-ink-100 bg-even-ink-50/40 p-3">
+    <div className="space-y-3">
       {additions.length > 0 && (
-        <div className="rounded-lg border border-violet-200 bg-violet-50/60 p-2">
-          <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-800">
-            <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-700">
+            <span aria-hidden>✨</span>
             For this patient
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {additions.map((label) => {
-              const on = sel.has(label);
-              return (
-                <button
-                  key={`add-${label}`}
-                  type="button"
-                  disabled={readOnly}
-                  onClick={() => onToggle(label)}
-                  aria-pressed={on}
-                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed ${
-                    on
-                      ? 'bg-violet-600 text-white shadow-sm'
-                      : 'bg-white text-violet-900 ring-1 ring-violet-300 hover:ring-violet-500'
-                  }`}
-                >
-                  <span
-                    aria-hidden
-                    className={`inline-block h-1.5 w-1.5 rounded-full ${
-                      on ? 'bg-white' : 'bg-violet-500'
-                    }`}
-                  />
-                  {label}
-                </button>
-              );
-            })}
-          </div>
+          </span>
+          {additions.map((label) => {
+            const on = sel.has(label);
+            return (
+              <button
+                key={`add-${label}`}
+                type="button"
+                disabled={readOnly}
+                onClick={() => onToggle(label)}
+                aria-pressed={on}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed ${
+                  on
+                    ? 'bg-violet-600 text-white shadow-sm'
+                    : 'bg-violet-50 text-violet-900 ring-1 ring-violet-300 hover:ring-violet-500'
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
       )}
-      {buckets.map((b) => (
-        <div key={b.cat}>
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-even-ink-500">
-            {b.name}
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {CC_CHIPS.filter((c) => c.category === b.cat)
-              .slice()
-              .sort(orderInBucket)
-              .map((c) => {
+
+      {/* v4.0.3 — flat wall with inline category labels. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        {bands.map((b, bi) => {
+          const chips = CC_CHIPS.filter((c) => c.category === b.cat).slice().sort(orderInBand);
+          if (chips.length === 0) return null;
+          return (
+            <span key={b.cat} className="contents">
+              {bi > 0 && (
+                <span aria-hidden className="text-even-ink-300">
+                  ·
+                </span>
+              )}
+              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-even-ink-500">
+                {b.name}
+              </span>
+              {chips.map((c) => {
                 const on = sel.has(c.label);
                 return (
                   <button
@@ -1252,9 +1249,10 @@ function CcChipGrid({
                   </button>
                 );
               })}
-          </div>
-        </div>
-      ))}
+            </span>
+          );
+        })}
+      </div>
     </div>
   );
 }
