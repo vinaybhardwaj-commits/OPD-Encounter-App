@@ -85,7 +85,7 @@ export function SuggestedOrderChips({
   if (loading) {
     return (
       <div className="rounded-md border border-even-blue-100 bg-even-blue-50/30 px-3 py-2 text-[11px] italic text-even-blue-700">
-        Qwen is suggesting orders from this encounter&apos;s context…
+        Suggesting orders from this encounter&apos;s context…
       </div>
     );
   }
@@ -105,7 +105,7 @@ export function SuggestedOrderChips({
       <div className="mb-2 flex items-baseline justify-between">
         <div className="flex items-baseline gap-2">
           <span className="text-[10px] uppercase tracking-wider text-even-blue-700">
-            Qwen suggests
+            ✨ Suggested orders
           </span>
           {cached && <span className="text-[10px] text-even-ink-400">cached</span>}
         </div>

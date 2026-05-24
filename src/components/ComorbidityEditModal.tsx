@@ -463,7 +463,7 @@ export function ComorbidityEditModal({
                                         );
                                       })}
                                       {eff.from_qwen && eff.control_state && (
-                                        <span className="text-[10px] text-violet-600" title={sugg?.rationale ?? 'Qwen-suggested from assessment'}>✨ suggested</span>
+                                        <span className="text-[10px] text-violet-600" title={sugg?.rationale ?? 'AI-suggested from assessment'}>✨ suggested</span>
                                       )}
                                     </div>
                                   )}
@@ -485,7 +485,7 @@ export function ComorbidityEditModal({
                                         );
                                       })}
                                       {eff.from_qwen && eff.severity_state && (
-                                        <span className="text-[10px] text-violet-600" title={sugg?.rationale ?? 'Qwen-suggested from assessment'}>✨ suggested</span>
+                                        <span className="text-[10px] text-violet-600" title={sugg?.rationale ?? 'AI-suggested from assessment'}>✨ suggested</span>
                                       )}
                                     </div>
                                   )}
@@ -552,7 +552,7 @@ export function ComorbidityEditModal({
                 Suggest from history
               </span>
               <span className="text-[11px] text-even-ink-500">
-                Qwen reads past 5–10 encounters and proposes chronic conditions
+                Read past 5–10 encounters to propose chronic conditions
               </span>
             </div>
             <button
@@ -567,7 +567,7 @@ export function ComorbidityEditModal({
 
           {historyLoading && (
             <div className="mt-2 text-[11px] italic text-violet-700">
-              Qwen is scanning past completed encounters…
+              Scanning past completed encounters…
             </div>
           )}
 
@@ -575,7 +575,7 @@ export function ComorbidityEditModal({
             <div className="mt-3 rounded-md border border-violet-200 bg-white">
               <div className="flex items-baseline justify-between border-b border-violet-100 px-3 py-1.5">
                 <span className="text-[10px] uppercase tracking-wider text-violet-700">
-                  Suggested by Qwen
+                  ✨ AI suggestions
                 </span>
                 <span className="text-[10px] text-even-ink-400">
                   {historySuggestions.length} codes from {historyScanned ?? '?'} encounters{historyLatency !== null && ` · ${(historyLatency / 1000).toFixed(1)}s`}
@@ -607,7 +607,7 @@ export function ComorbidityEditModal({
 
           {historySuggestions && historySuggestions.length === 0 && !historyLoading && (
             <div className="mt-2 text-[11px] italic text-even-ink-400">
-              Qwen found no new chronic conditions in the past {historyScanned ?? '?'} encounters.
+              No new chronic conditions found in the past {historyScanned ?? '?'} encounters.
             </div>
           )}
 

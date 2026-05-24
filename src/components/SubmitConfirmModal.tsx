@@ -364,7 +364,7 @@ function DdxSection({ state }: { state: DdxState }) {
     <div>
       <p className="text-[11px] font-semibold uppercase tracking-wider text-even-ink-500">
         Did you consider?{' '}
-        <span className="font-normal text-even-ink-400">· Qwen DDx</span>
+        <span className="font-normal text-even-ink-400">· ✨ DDx</span>
       </p>
       {state.kind === 'loading' && (
         <p className="mt-1 text-xs italic text-even-ink-400">
@@ -373,7 +373,7 @@ function DdxSection({ state }: { state: DdxState }) {
       )}
       {state.kind === 'failed' && (
         <p className="mt-1 rounded-md bg-even-ink-50 px-2 py-1 text-[11px] text-even-ink-500">
-          DDx unavailable — Qwen failed ({state.error}). Submit isn&apos;t
+          DDx unavailable — AI failed ({state.error}). Submit isn&apos;t
           blocked.
         </p>
       )}

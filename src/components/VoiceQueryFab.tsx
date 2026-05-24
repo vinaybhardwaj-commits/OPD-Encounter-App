@@ -179,7 +179,7 @@ export function VoiceQueryFab({ encounterId }: { encounterId: string }) {
         onMouseLeave={onPressEnd}
         onTouchStart={onPressStart}
         onTouchEnd={onPressEnd}
-        title="Press & hold to ask Qwen about this patient"
+        title="Press & hold to ask about this patient"
         className={`group inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold transition select-none ${
           phase === 'recording'
             ? 'bg-even-pink-700 text-white shadow-md scale-105'
@@ -187,7 +187,7 @@ export function VoiceQueryFab({ encounterId }: { encounterId: string }) {
             ? 'bg-amber-500 text-white'
             : 'bg-even-blue text-white hover:bg-even-blue-700'
         }`}
-        aria-label="Push to talk — ask Qwen"
+        aria-label="Push to talk — ask the AI"
       >
         <MicIcon className="h-3.5 w-3.5" />
         <span>
@@ -195,7 +195,7 @@ export function VoiceQueryFab({ encounterId }: { encounterId: string }) {
             ? 'Listening…'
             : phase === 'uploading'
             ? 'Asking…'
-            : 'Ask Qwen'}
+            : 'Ask AI'}
         </span>
       </button>
 
@@ -205,7 +205,7 @@ export function VoiceQueryFab({ encounterId }: { encounterId: string }) {
             <div>
               <p className="text-sm font-semibold text-even-navy">Voice query</p>
               <p className="text-[10px] uppercase tracking-wider text-even-ink-500">
-                Qwen · Press &amp; hold the mic in the header to ask
+                ✨ Press &amp; hold the mic in the header to ask
               </p>
             </div>
             <button
@@ -225,7 +225,7 @@ export function VoiceQueryFab({ encounterId }: { encounterId: string }) {
             )}
             {phase === 'uploading' && (
               <div className="rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
-                Transcribing + asking Qwen… (5–30s on cold start)
+                Transcribing + thinking… (5–30s on cold start)
               </div>
             )}
             {history.length === 0 && phase !== 'uploading' && !error && (
@@ -248,7 +248,7 @@ export function VoiceQueryFab({ encounterId }: { encounterId: string }) {
                     &ldquo;{q.question_transcript}&rdquo;
                   </p>
                   <p className="mt-2 text-[10px] uppercase tracking-wider text-even-blue-700">
-                    Qwen
+                    ✨
                   </p>
                   <p className="mt-0.5 whitespace-pre-wrap text-[12px] text-even-navy">
                     {q.answer_text}

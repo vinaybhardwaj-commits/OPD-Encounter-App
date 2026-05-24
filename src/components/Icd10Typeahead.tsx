@@ -135,7 +135,7 @@ export function Icd10Typeahead({
       if (!res.ok) {
         setQwenError(`Server returned ${res.status}: ${json.error ?? 'unknown'}`);
       } else if (!json.ok) {
-        setQwenError(`Qwen error: ${json.error ?? 'unknown'}`);
+        setQwenError(`AI error: ${json.error ?? 'unknown'}`);
       } else if (!Array.isArray(json.suggestions)) {
         setQwenError('Bad response shape — no suggestions array');
       } else {
@@ -230,10 +230,10 @@ export function Icd10Typeahead({
             onMouseDown={(e) => e.preventDefault()}
             onClick={submitQwen}
             disabled={qwenLoading || query.trim().length < 2}
-            title="Ask Qwen to interpret this as an ICD-10 code (handles shorthand like 'T2DM' or 'HTN uncontrolled')"
+            title="Interpret shorthand like 'T2DM' or 'HTN uncontrolled' as ICD-10"
             className="shrink-0 rounded-lg bg-violet-600 px-3 py-2 text-xs font-medium text-white hover:bg-violet-700 disabled:opacity-50"
           >
-            {qwenLoading ? '⟳ Qwen…' : 'Suggest with Qwen ↩'}
+            {qwenLoading ? '⟳ Thinking…' : '✨ Suggest ↩'}
           </button>
         )}
       </div>
@@ -298,14 +298,14 @@ export function Icd10Typeahead({
       {/* v3.8 — Qwen NLP suggestions block (only when encounterId set) */}
       {encounterId && qwenLoading && (
         <div className="mt-2 rounded-md border border-violet-200 bg-violet-50/40 px-3 py-2 text-[11px] italic text-violet-700">
-          Qwen is interpreting &quot;{query}&quot; as ICD-10…
+          Interpreting &quot;{query}&quot; as ICD-10…
         </div>
       )}
 
       {encounterId && qwenSuggestions && qwenSuggestions.length > 0 && (
         <div className="mt-2 rounded-md border border-violet-200 bg-violet-50/30 p-2">
           <div className="mb-1.5 flex items-baseline justify-between">
-            <span className="text-[10px] uppercase tracking-wider text-violet-700">Suggested by Qwen</span>
+            <span className="text-[10px] uppercase tracking-wider text-violet-700">✨ AI suggestions</span>
             <span className="text-[10px] text-even-ink-400">
               {qwenSuggestions.length} code{qwenSuggestions.length === 1 ? '' : 's'}
               {qwenLatencyMs !== null && ` · ${(qwenLatencyMs / 1000).toFixed(1)}s`}
@@ -349,7 +349,7 @@ export function Icd10Typeahead({
 
       {encounterId && !qwenLoading && qwenSuggestions && qwenSuggestions.length === 0 && (
         <div className="mt-2 text-[11px] italic text-even-ink-400">
-          Qwen couldn&apos;t map &quot;{query}&quot; to an ICD-10 code.
+          Couldn&apos;t map &quot;{query}&quot; to an ICD-10 code.
         </div>
       )}
 

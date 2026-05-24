@@ -50,7 +50,7 @@ export function ExtractIcd10FromAssessmentButton({
       if (!res.ok) {
         setErr(`Server returned ${res.status}: ${json.error ?? 'unknown'}`);
       } else if (!json.ok) {
-        setErr(`Qwen error: ${json.error ?? 'unknown'}`);
+        setErr(`AI error: ${json.error ?? 'unknown'}`);
       } else if (!Array.isArray(json.suggestions)) {
         setErr('Bad response shape — no suggestions array');
       } else {
@@ -74,7 +74,7 @@ export function ExtractIcd10FromAssessmentButton({
         disabled={loading || assessmentText.trim().length < 3}
         className="rounded-md border border-violet-300 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-50"
       >
-        {loading ? '⟳ Qwen reading assessment…' : '✨ Extract ICD-10 from assessment'}
+        {loading ? '⟳ Reading assessment…' : '✨ Extract ICD-10 from assessment'}
       </button>
 
       {suggestions && suggestions.length > 0 && (
@@ -118,7 +118,7 @@ export function ExtractIcd10FromAssessmentButton({
 
       {suggestions && suggestions.length === 0 && !loading && (
         <div className="text-[11px] italic text-even-ink-400">
-          Qwen couldn&apos;t extract codes from this assessment. Try writing more, or add via the search above.
+          Couldn&apos;t extract codes from this assessment. Try writing more, or add via the search above.
         </div>
       )}
 

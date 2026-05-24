@@ -175,7 +175,7 @@ export function DdiBanner({
           </span>
           {payload.status === 'ok' && (
             <span>
-              Qwen · {new Date(payload.scanned_at).toLocaleTimeString('en-IN')}
+              ✨ {new Date(payload.scanned_at).toLocaleTimeString('en-IN')}
             </span>
           )}
         </div>

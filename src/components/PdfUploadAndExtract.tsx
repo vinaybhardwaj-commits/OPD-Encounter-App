@@ -231,7 +231,7 @@ export function PdfUploadAndExtract({
   if (!canUpload) {
     return (
       <div className="rounded-2xl border border-dashed border-even-ink-300 bg-white p-6 text-xs text-even-ink-500">
-        Claim this order to enable PDF upload + Qwen extraction.
+        Claim this order to enable PDF upload + AI extraction.
       </div>
     );
   }
@@ -264,7 +264,7 @@ export function PdfUploadAndExtract({
               Drop a PDF, PNG, or JPEG here
             </p>
             <p className="mt-1 text-[11px] text-even-ink-500">
-              Or click to pick a file · Qwen-VL extracts each page on the
+              Or click to pick a file · AI extracts each page on the
               server.
             </p>
           </div>
@@ -295,7 +295,7 @@ export function PdfUploadAndExtract({
       )}
       {phase === 'uploading' && (
         <p className="mt-3 text-xs text-even-ink-500">
-          Uploading + Qwen extracting… (cold start can take ~30s)
+          Uploading + extracting… (cold start can take ~30s)
         </p>
       )}
 
@@ -333,7 +333,7 @@ export function PdfUploadAndExtract({
             </div>
             {extractionFailed && (
               <p className="mt-2 rounded-md bg-even-pink-50 px-2 py-1 text-[10px] text-even-pink-800">
-                Qwen extraction error — values shown may be incomplete. Manual
+                Extraction error — values shown may be incomplete. Manual
                 edit grid lands in v2.1.4.
               </p>
             )}

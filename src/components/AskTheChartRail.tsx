@@ -139,7 +139,7 @@ export function AskTheChartRail({
                 disabled={pending}
                 className="h-3 w-3"
               />
-              Deep mode (qwen 14b)
+              Deep mode
             </label>
             <button
               type="button"

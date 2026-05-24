@@ -182,7 +182,7 @@ export function DdxOnDemand({
     state.kind === 'idle'
       ? 'Suggest DDx'
       : state.kind === 'loading'
-      ? 'Asking Qwen…'
+      ? 'Thinking…'
       : 'Refresh DDx';
 
   return (
@@ -190,7 +190,7 @@ export function DdxOnDemand({
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-wider text-even-ink-500">
-            Differential diagnosis · Qwen
+            Differential diagnosis · ✨
           </p>
           <p className="text-[10px] text-even-ink-400">
             On-demand sanity check. Auto-DDx also fires on Submit.
@@ -231,13 +231,13 @@ export function DdxOnDemand({
 
       {isLoading && (
         <p className="mt-2 text-[11px] italic text-even-ink-400">
-          Pulling patient context + asking Qwen for a ranked DDx…
+          Pulling patient context for a ranked differential…
         </p>
       )}
 
       {isOk && state.findings.length === 0 && (
         <p className="mt-2 text-[11px] text-even-ink-500">
-          Qwen returned 0 findings. Either the chart is too thin to reason
+          Returned 0 findings. Either the chart is too thin to reason
           over, or your assessment already covers it.
         </p>
       )}
@@ -255,7 +255,7 @@ export function DdxOnDemand({
           </ul>
           <p className="mt-2 text-[10px] text-even-ink-400">
             Last scan {new Date(state.scanned_at).toLocaleTimeString('en-IN')}
-            {state.latency_ms ? ` · qwen ${state.latency_ms}ms` : ''}
+            {state.latency_ms ? ` · ${state.latency_ms}ms` : ''}
             {state.kb_latency_ms ? ` · kb ${state.kb_latency_ms}ms` : ''}
             {state.citations.length > 0 ? ` · ${state.citations.length} ref${state.citations.length === 1 ? '' : 's'}` : ''}
           </p>

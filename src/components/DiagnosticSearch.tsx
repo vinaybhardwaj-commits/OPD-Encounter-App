@@ -101,10 +101,10 @@ export function DiagnosticSearch({
         setQwenSuggestions(json.suggestions);
         setQwenLatency(json.latency_ms ?? null);
         if (json.suggestions.length === 0 && json.error) {
-          setQwenErr(`Qwen unavailable — type more or use the instant matches above.`);
+          setQwenErr(`AI unavailable — type more or use the instant matches above.`);
         }
       } else {
-        setQwenErr('Qwen unavailable — type more or use the instant matches above.');
+        setQwenErr('AI unavailable — type more or use the instant matches above.');
       }
     } catch (e) {
       setQwenErr(e instanceof Error ? e.message : String(e));
@@ -137,10 +137,10 @@ export function DiagnosticSearch({
             type="button"
             onClick={submitQwen}
             disabled={qwenLoading || q.trim().length < 2}
-            title="Send to Qwen for clinical-shorthand interpretation"
+            title="Interpret clinical shorthand"
             className="shrink-0 rounded-md bg-violet-600 px-3 py-2 text-xs font-medium text-white hover:bg-violet-700 disabled:opacity-50"
           >
-            {qwenLoading ? '⟳ Qwen…' : 'Suggest with Qwen ↩'}
+            {qwenLoading ? '⟳ Thinking…' : '✨ Suggest ↩'}
           </button>
         )}
       </div>
@@ -193,7 +193,7 @@ export function DiagnosticSearch({
       {/* Qwen NLP suggestions block — only when encounterId set */}
       {encounterId && qwenLoading && (
         <div className="rounded-md border border-violet-200 bg-violet-50/40 px-3 py-2 text-[11px] italic text-violet-700">
-          Qwen is interpreting &quot;{q}&quot;…
+          Interpreting &quot;{q}&quot;…
         </div>
       )}
 
@@ -201,7 +201,7 @@ export function DiagnosticSearch({
         <div className="rounded-md border border-violet-200 bg-violet-50/30 p-2">
           <div className="mb-1.5 flex items-baseline justify-between">
             <div className="flex items-baseline gap-2">
-              <span className="text-[10px] uppercase tracking-wider text-violet-700">Suggested by Qwen</span>
+              <span className="text-[10px] uppercase tracking-wider text-violet-700">✨ AI suggestions</span>
               <span className="text-[10px] text-even-ink-400">
                 {qwenSuggestions.length} match{qwenSuggestions.length === 1 ? '' : 'es'}
                 {qwenLatency !== null && ` · ${(qwenLatency / 1000).toFixed(1)}s`}

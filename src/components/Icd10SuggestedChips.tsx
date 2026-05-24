@@ -48,7 +48,7 @@ export function Icd10SuggestedChips({
   if (loading) {
     return (
       <div className="rounded-md border border-violet-100 bg-violet-50/30 px-3 py-2 text-[11px] italic text-violet-700">
-        Qwen is reading the encounter context for ICD-10 suggestions…
+        Reading the encounter context for ICD-10 suggestions…
       </div>
     );
   }
@@ -60,7 +60,7 @@ export function Icd10SuggestedChips({
     <div className="rounded-md border border-violet-200 bg-violet-50/30 p-2">
       <div className="mb-1.5 flex items-baseline gap-2">
         <span className="text-[10px] uppercase tracking-wider text-violet-700">
-          ICD-10 · Qwen suggests from context
+          ICD-10 · ✨ Suggested from context
         </span>
         {cached && <span className="text-[10px] text-even-ink-400">cached</span>}
       </div>

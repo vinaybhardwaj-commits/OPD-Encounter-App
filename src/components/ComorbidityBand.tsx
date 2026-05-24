@@ -232,7 +232,7 @@ export function ComorbidityBand({
               <div className="mt-3 rounded-lg border border-dashed border-violet-300 bg-violet-50/40 p-3">
                 <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
                   <div className="text-[11px] font-medium text-violet-800">
-                    ✨ Qwen suggests for {patientAge}{sexLabel}
+                    ✨ Suggested for {patientAge}{sexLabel}
                     {ccLabel && <> with <em className="font-normal not-italic text-violet-700">{ccLabel}</em></>}
                     {' — '}
                     <span className="text-violet-600 italic font-normal">just a guess, confirm</span>

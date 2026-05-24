@@ -211,7 +211,7 @@ export function DiagnosticsQuickAddStrip({
       <div className="border-b border-even-ink-50 px-4 py-3">
         <div className="flex items-baseline justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-even-navy">
-            Diagnostics · Qwen
+            Diagnostics · ✨
           </h2>
           <p className="text-[11px] text-even-ink-400">
             {cceCount > 0
@@ -350,7 +350,7 @@ export function DiagnosticsQuickAddStrip({
                         </span>
                       ) : c.source === 'context_chip' ? (
                         <span className="shrink-0 rounded-full bg-violet-50 px-1.5 py-0 text-[10px] text-violet-700 ring-1 ring-violet-200">
-                          via Qwen
+                          via AI
                         </span>
                       ) : (
                         <span className="shrink-0 rounded-full bg-even-ink-100 px-1.5 py-0 text-[10px] text-even-ink-600">
