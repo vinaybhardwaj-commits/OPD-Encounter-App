@@ -408,6 +408,82 @@ export async function kbDrugIndication(
   }
 }
 
+// ----- Drug monograph helper (v3.10.5) -----
+
+export type KbDrugMonograph = {
+  drug_name: string;
+  indication: KbMonographChunk[];
+  warnings: KbMonographChunk[];
+};
+
+export type KbMonographChunk = {
+  book: string;
+  chapter: string | null;
+  section: string | null;
+  chunk_type: string | null;
+  text: string;
+};
+
+/**
+ * kbDrugMonograph — bigger sibling of kbDrugIndication for the v3.10.5
+ * Drug Monograph drawer. Returns up to 2 indication chunks AND up to
+ * 3 warning/contraindication chunks for a given drug name.
+ *
+ * Direct SQL on the openfda corpus, no vector search needed — drug
+ * label sections are already indexed by chapter (drug name) + chunk_type
+ * (SPL section key).
+ */
+export async function kbDrugMonograph(
+  drugName: string,
+): Promise<KbDrugMonograph | null> {
+  const pool = kbPool();
+  if (!pool) return null;
+  const name = drugName.toLowerCase().trim();
+  if (name.length < 3) return null;
+
+  try {
+    const [indRes, warnRes] = await Promise.all([
+      pool.query<KbMonographChunk>(
+        `SELECT book, chapter, section, chunk_type, text
+         FROM mksap_chunks
+         WHERE source = 'openfda'
+           AND lower(chapter) LIKE '%' || $1 || '%'
+           AND (chunk_type = 'indications_and_usage' OR section ILIKE '%indications%')
+         ORDER BY CASE WHEN chunk_type = 'indications_and_usage' THEN 0 ELSE 1 END,
+                  length(chapter) ASC
+         LIMIT 2`,
+        [name],
+      ),
+      pool.query<KbMonographChunk>(
+        `SELECT book, chapter, section, chunk_type, text
+         FROM mksap_chunks
+         WHERE source = 'openfda'
+           AND lower(chapter) LIKE '%' || $1 || '%'
+           AND (
+             chunk_type IN ('contraindications','warnings','boxed_warning','warnings_and_cautions')
+             OR section ILIKE '%contraindication%'
+             OR section ILIKE '%warning%'
+           )
+         ORDER BY CASE WHEN chunk_type = 'boxed_warning' THEN 0
+                       WHEN chunk_type = 'contraindications' THEN 1
+                       WHEN chunk_type = 'warnings_and_cautions' THEN 2
+                       ELSE 3 END,
+                  length(chapter) ASC
+         LIMIT 3`,
+        [name],
+      ),
+    ]);
+    if (indRes.rows.length === 0 && warnRes.rows.length === 0) return null;
+    return {
+      drug_name: drugName,
+      indication: indRes.rows,
+      warnings: warnRes.rows,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ----- Health -----
 
 export type KbHealth = {

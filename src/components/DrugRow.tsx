@@ -26,6 +26,7 @@ import {
   DURATION_OPTIONS,
   TIMING_OPTIONS,
 } from '@/lib/drug-defaults';
+import { DrugMonographDrawer } from './DrugMonographDrawer';
 
 export type PrescriptionLine = {
   item_code: string;
@@ -71,6 +72,8 @@ type Group = 'freq' | 'dur' | 'timing' | 'inst' | null;
 
 export function DrugRow({ line, onChange, onRemove, readOnly }: DrugRowProps) {
   const [expanded, setExpanded] = useState<Group>(null);
+  // v3.10.5 — drug monograph drawer (OpenFDA indication + warnings)
+  const [monoOpen, setMonoOpen] = useState(false);
 
   const set = <K extends keyof PrescriptionLine>(k: K, v: PrescriptionLine[K]) => {
     onChange({ ...line, [k]: v });
@@ -105,6 +108,16 @@ export function DrugRow({ line, onChange, onRemove, readOnly }: DrugRowProps) {
             <span className="text-even-ink-400"> · {line.dosage_form}</span>
           </div>
         </div>
+        {/* v3.10.5 — drug monograph 'i' button */}
+        <button
+          type="button"
+          onClick={() => setMonoOpen(true)}
+          aria-label={`View FDA monograph for ${line.generic_name || line.brand_name}`}
+          title="View FDA monograph"
+          className="rounded-full bg-violet-50 px-1.5 py-0 text-[10px] font-semibold text-violet-700 ring-1 ring-violet-200 hover:bg-violet-100"
+        >
+          i
+        </button>
         {!readOnly && (
           <button
             type="button"
@@ -116,6 +129,13 @@ export function DrugRow({ line, onChange, onRemove, readOnly }: DrugRowProps) {
           </button>
         )}
       </div>
+
+      {/* v3.10.5 — drawer (mounted only when open) */}
+      <DrugMonographDrawer
+        drugName={line.generic_name || line.brand_name}
+        open={monoOpen}
+        onClose={() => setMonoOpen(false)}
+      />
 
       {/* Chip groups */}
       <div className="mt-4 flex flex-wrap gap-x-3 gap-y-2 text-xs">
