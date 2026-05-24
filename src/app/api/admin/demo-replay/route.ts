@@ -44,11 +44,21 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
+// v3.9.7 — Vercel crons fire GET requests; delegate to POST so the
+// same auth/replay logic runs on both verbs.
+export async function GET(req: Request) {
+  return POST(req);
+}
+
 export async function POST(req: Request) {
-  // Auth — admin session OR migration-secret header.
+  // Auth — admin session OR migration-secret header OR Vercel cron's
+  // Bearer token (v3.9.7: daily cron self-heals the demo-encounter pool).
   const headerSecret = req.headers.get('x-migration-secret');
   const expectedSecret = process.env.MIGRATION_SECRET;
-  let authed = expectedSecret && headerSecret === expectedSecret;
+  const cronSecret = process.env.CRON_SECRET;
+  const bearer = req.headers.get('authorization');
+  let authed = !!(expectedSecret && headerSecret === expectedSecret);
+  if (!authed && cronSecret && bearer === `Bearer ${cronSecret}`) authed = true;
   if (!authed) {
     const session = await getCurrentUser();
     if (session?.role === 'admin') authed = true;
