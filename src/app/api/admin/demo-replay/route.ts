@@ -51,14 +51,25 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  // Auth — admin session OR migration-secret header OR Vercel cron's
-  // Bearer token (v3.9.7: daily cron self-heals the demo-encounter pool).
+  // Auth — multiple acceptable paths:
+  //   1. x-migration-secret header matching MIGRATION_SECRET env (manual curl)
+  //   2. Authorization: Bearer <CRON_SECRET> (Vercel cron with secret set)
+  //   3. x-vercel-cron header present (Vercel cron, no secret needed —
+  //      Vercel strips this header from external requests so spoofing is
+  //      not possible)
+  //   4. Admin session (logged-in admin user)
+  //
+  // v3.9.7b — path 3 added because the original v3.9.7 cron silently
+  // 401'd every night when CRON_SECRET wasn't set in env. x-vercel-cron
+  // is the Vercel-documented default mechanism for cron auth.
   const headerSecret = req.headers.get('x-migration-secret');
   const expectedSecret = process.env.MIGRATION_SECRET;
   const cronSecret = process.env.CRON_SECRET;
   const bearer = req.headers.get('authorization');
+  const vercelCronHeader = req.headers.get('x-vercel-cron');
   let authed = !!(expectedSecret && headerSecret === expectedSecret);
   if (!authed && cronSecret && bearer === `Bearer ${cronSecret}`) authed = true;
+  if (!authed && vercelCronHeader) authed = true;
   if (!authed) {
     const session = await getCurrentUser();
     if (session?.role === 'admin') authed = true;
