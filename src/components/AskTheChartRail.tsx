@@ -19,7 +19,7 @@
  *  - 'Ask with deep mode' (qwen2.5:14b) checkbox for tough questions.
  *  - Soft-fail: KB unreachable → friendly error in the Q&A pair.
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type Citation = {
   n: number;
@@ -51,6 +51,21 @@ export function AskTheChartRail({
   encounterId: string;
   readOnly?: boolean;
 }) {
+  // v4.0.8 — pin persists in localStorage so the doctor's choice
+  // sticks across reloads and across encounters.
+  const PIN_KEY = 'enc:ask-chart:pinned';
+  const [pinned, setPinned] = useState<boolean>(true);
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(PIN_KEY);
+      if (raw === '0') setPinned(false);
+      else if (raw === '1') setPinned(true);
+    } catch { /* localStorage blocked */ }
+  }, []);
+  useEffect(() => {
+    try { window.localStorage.setItem(PIN_KEY, pinned ? '1' : '0'); } catch { /* ignore */ }
+  }, [pinned]);
+
   const [draft, setDraft] = useState('');
   const [deep, setDeep] = useState(false);
   const [pending, setPending] = useState(false);
@@ -102,6 +117,8 @@ export function AskTheChartRail({
   };
 
   return (
+    // v4.0.8 — outer wrapper handles sticky/relative based on pin state.
+    <div className={pinned ? 'lg:sticky lg:top-6' : ''}>
     <aside
       className="rounded-xl border border-violet-200 bg-violet-50/30"
       aria-label="Ask the chart"
@@ -111,7 +128,22 @@ export function AskTheChartRail({
           <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-violet-800">
             ✨ Ask the chart
           </h2>
-          <span className="text-[9px] text-violet-500">v3.10.4 · KB-grounded</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] text-violet-500">v3.10.4 · KB-grounded</span>
+            <button
+              type="button"
+              onClick={() => setPinned((v) => !v)}
+              aria-label={pinned ? 'Unpin side panel' : 'Pin side panel'}
+              title={pinned ? 'Unpin (let it scroll with the page)' : 'Pin (keep visible while scrolling)'}
+              className={`rounded-md px-1.5 py-0.5 text-[10px] transition ${
+                pinned
+                  ? 'bg-violet-600 text-white hover:bg-violet-700'
+                  : 'bg-white text-violet-700 ring-1 ring-violet-300 hover:bg-violet-50'
+              }`}
+            >
+              {pinned ? '📌' : '📍'}
+            </button>
+          </div>
         </div>
         <p className="mt-0.5 text-[10px] text-even-ink-500">
           Cited answers using this patient&rsquo;s full encounter context.
@@ -167,6 +199,7 @@ export function AskTheChartRail({
         )}
       </div>
     </aside>
+    </div>
   );
 }
 

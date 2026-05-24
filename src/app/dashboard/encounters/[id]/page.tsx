@@ -344,13 +344,13 @@ export default async function EncounterPage({
         />
           </div>
           <div className="mt-6 lg:mt-0">
-            <div className="lg:sticky lg:top-6">
-              {/* v3.10.4 — Ask-the-chart right rail */}
-              <AskTheChartRail
-                encounterId={row.id}
-                readOnly={row.status === 'completed'}
-              />
-            </div>
+            {/* v3.10.4 — Ask-the-chart right rail.
+                v4.0.8 — sticky/relative now lives inside the rail and is
+                toggled by a pin button persisted in localStorage. */}
+            <AskTheChartRail
+              encounterId={row.id}
+              readOnly={row.status === 'completed'}
+            />
           </div>
         </div>
       </section>

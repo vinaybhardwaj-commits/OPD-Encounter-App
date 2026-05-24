@@ -31,6 +31,7 @@ import { PrescriptionCompose } from './PrescriptionCompose';
 import type { PrescriptionLine } from './DrugRow';
 import { useRxCoherence, RxCoherencePanel, type OverrideRecord } from './RxCoherencePanel';
 import { Section } from './encounter/Section';
+import { ShortcutsOverlay } from './encounter/ShortcutsOverlay';
 import { AmbientRecorder } from './AmbientRecorder';
 import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewer';
 import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
@@ -209,6 +210,23 @@ export function EncounterEditor({
   });
 
   const [ccChips, setCcChips] = useState<string[]>(initial.chief_complaint_chips ?? []);
+
+  // v4.0.8 — keyboard shortcuts overlay (? to open, Esc to close).
+  // Ignores '?' when an input/textarea has focus so doctors can type a
+  // literal question mark.
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== '?') return;
+      const t = (e.target as HTMLElement | null);
+      const tag = t?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return;
+      e.preventDefault();
+      setShowShortcuts(true);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const [cc, setCc] = useState(initial.chief_complaint_text ?? '');
   const [exam, setExam] = useState(initial.exam_findings ?? '');
   const [assessmentCodes, setAssessmentCodes] = useState<string[]>(initial.assessment_codes ?? []);
@@ -949,6 +967,9 @@ export function EncounterEditor({
         follow_up_days={typeof followUpDays === 'number' ? followUpDays : null}
         referral_target={referralTarget || null}
       />
+
+      {/* v4.0.8 — keyboard shortcuts overlay (? key) */}
+      <ShortcutsOverlay open={showShortcuts} onClose={() => setShowShortcuts(false)} />
     </div>
   );
 }
