@@ -561,7 +561,7 @@ export function EncounterEditor({
         >
           <DiagnosticsQuickAddStrip
             encounterId={initial.id}
-            readOnly={readOnly || initial.status === 'completed'}
+            readOnly={readOnly}
           />
         </Section>
       )}
