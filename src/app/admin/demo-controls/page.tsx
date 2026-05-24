@@ -131,7 +131,7 @@ export default async function DemoControlsPage() {
         >
           {status.paused_encounters.length === 0 ? (
             <p className="text-xs text-even-ink-400">
-              No paused encounters right now. Reset the queue or start a new one and send to diagnostics (Sprint 6) to see this in action.
+              No paused encounters right now. Reset the queue or start a new one and send to diagnostics to see this in action.
             </p>
           ) : (
             <ul className="space-y-2">
@@ -190,7 +190,7 @@ export default async function DemoControlsPage() {
         </ControlCard>
 
         <p className="mt-12 text-[11px] text-even-ink-400">
-          Sprint 6 wires real pause/resume choreography on top of these.
+          Pause/resume choreography is wired on top of these.
           For now, every state change here surfaces immediately on{' '}
           <Link href="/dashboard" className="underline hover:text-even-navy">
             /dashboard

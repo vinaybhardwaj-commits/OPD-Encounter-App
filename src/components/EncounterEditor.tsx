@@ -33,6 +33,7 @@ import { useRxCoherence, RxCoherencePanel, type OverrideRecord } from './RxCoher
 import { Section } from './encounter/Section';
 import { ShortcutsOverlay } from './encounter/ShortcutsOverlay';
 import { CommandPalette, type CommandAction } from './encounter/CommandPalette';
+import { PausedDiagnosticsBanner } from './encounter/PausedDiagnosticsBanner';
 import { AmbientRecorder } from './AmbientRecorder';
 import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewer';
 import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
@@ -480,12 +481,11 @@ export function EncounterEditor({
       )}
 
       {initial.status === 'paused_diagnostics' && (
-        <div className="rounded-lg border border-even-pink-200 bg-even-pink-50 p-3 text-xs text-even-navy">
-          Encounter paused — awaiting{' '}
-          <span className="font-medium">{initial.pending_diagnostic_test}</span>.
-          You can still update notes; Submit is held until the encounter is
-          back as Ready to resume.
-        </div>
+        <PausedDiagnosticsBanner
+          encounterId={initial.id}
+          pendingTest={initial.pending_diagnostic_test ?? null}
+          dispositionPicked={!!disposition}
+        />
       )}
 
       {/* v2.3 — per-section attribution strip when multiple doctors

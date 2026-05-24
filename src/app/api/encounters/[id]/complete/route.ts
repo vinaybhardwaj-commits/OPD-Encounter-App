@@ -55,7 +55,7 @@ export async function POST(
       {
         ok: false,
         error: 'paused_for_diagnostics',
-        detail: 'Resume the encounter (Sprint 6) before completing it.',
+        detail: 'Diagnostics are still pending. Wait for results, or cancel the pending order, before completing.',
       },
       { status: 409 },
     );
