@@ -30,6 +30,7 @@ import { DictateButton } from './DictateButton';
 import { PrescriptionCompose } from './PrescriptionCompose';
 import type { PrescriptionLine } from './DrugRow';
 import { useRxCoherence, RxCoherencePanel, type OverrideRecord } from './RxCoherencePanel';
+import { Section } from './encounter/Section';
 import { AmbientRecorder } from './AmbientRecorder';
 import { TranscriptViewer, type TranscriptViewerHandle } from './TranscriptViewer';
 import { SendToDiagnosticsModal } from './SendToDiagnosticsModal';
@@ -461,6 +462,7 @@ export function EncounterEditor({
         readOnly={readOnly}
       />
       <Section
+        n={1}
         label="Chief complaint"
         desc="Tap chips for the common shortcuts. Add detail in the textarea."
         dictate={
@@ -506,6 +508,7 @@ export function EncounterEditor({
       </Section>
 
       <Section
+        n={2}
         label="Exam findings"
         desc="What you observed."
         dictate={
@@ -552,6 +555,7 @@ export function EncounterEditor({
       />
 
       <Section
+        n={5}
         label="Assessment"
         desc="Impression + ICD-10 codes."
         dictate={
@@ -678,6 +682,7 @@ export function EncounterEditor({
       </Section>
 
       <Section
+        n={6}
         label="Prescription"
         desc="Add drugs; chips fill from defaults. Tap to override."
         dictate={!readOnly ? { encounterId: initial.id, section: 'prescription' } : undefined}
@@ -693,7 +698,7 @@ export function EncounterEditor({
         <RxCoherencePanel state={rxCoherence} mode="inline" />
       </Section>
 
-      <Section label="Disposition" desc="Required to submit." required>
+      <Section n={7} label="Disposition" desc="Required to submit." required>
         {(() => {
           // PH.4: re-order the 6 standard buttons so the AI-recommended
           // one is leftmost, and stamp it with a violet dot.
@@ -951,50 +956,7 @@ export function EncounterEditor({
 const textareaCls =
   'w-full rounded-lg border border-even-ink-200 bg-white px-3 py-2 text-sm text-even-navy placeholder-even-ink-300 focus:border-even-blue focus:outline-none focus:ring-2 focus:ring-even-blue-100 disabled:bg-even-ink-50 disabled:text-even-ink-500';
 
-function Section({
-  label,
-  desc,
-  required,
-  dictate,
-  children,
-}: {
-  label: string;
-  desc?: string;
-  required?: boolean;
-  dictate?: {
-    encounterId: string;
-    section:
-      | 'chief_complaint'
-      | 'exam_findings'
-      | 'assessment'
-      | 'prescription'
-      | 'disposition';
-    onTranscript?: (t: string) => void;
-  };
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-3">
-        <div className="flex items-baseline gap-3">
-          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-even-navy">
-            {label}{' '}
-            {required && <span className="ml-1 text-even-pink-700">*</span>}
-          </h2>
-          {dictate && (
-            <DictateButton
-              encounterId={dictate.encounterId}
-              section={dictate.section}
-              onTranscript={dictate.onTranscript}
-            />
-          )}
-        </div>
-        {desc && <p className="text-[11px] text-even-ink-400">{desc}</p>}
-      </div>
-      {children}
-    </div>
-  );
-}
+
 
 /**
  * v2.3 — Compact attribution strip across the top of the editor. Shows
