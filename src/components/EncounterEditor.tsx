@@ -536,6 +536,8 @@ export function EncounterEditor({
           encounterId={initial.id}
           initialPayload={initial.ddx_findings ?? null}
           hidden={initial.status === 'completed'}
+          currentAssessment={assessment}
+          currentCcText={cc}
         />
       )}
 

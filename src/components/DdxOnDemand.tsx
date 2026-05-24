@@ -17,7 +17,7 @@
  * Per always-warn-never-block: this never blocks anything. It's pure
  * cognitive aid.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type DdxFinding = {
   condition: string;
@@ -61,12 +61,17 @@ export type DdxOnDemandProps = {
     | null;
   /** Hidden when encounter is completed. */
   hidden?: boolean;
+  /** v3.10.6 — live mode watches these fields and auto-fires DDx on change. */
+  currentAssessment?: string;
+  currentCcText?: string;
 };
 
 export function DdxOnDemand({
   encounterId,
   initialPayload,
   hidden,
+  currentAssessment,
+  currentCcText,
 }: DdxOnDemandProps) {
   const seed: DdxState = (() => {
     if (!initialPayload) return { kind: 'idle' };
@@ -88,11 +93,22 @@ export function DdxOnDemand({
 
   const [state, setState] = useState<DdxState>(seed);
 
+  // v3.10.6 — live mode + safeguards
+  const [live, setLive] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const lastHashRef = useRef<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const run = useCallback(async () => {
+    // Cancel any in-flight DDx call (live mode might trigger overlapping calls)
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     setState({ kind: 'loading' });
     try {
       const res = await fetch(`/api/encounters/${encounterId}/ddx`, {
         method: 'POST',
+        signal: ctrl.signal,
       });
       const j = (await res.json()) as {
         ok?: boolean;
@@ -117,12 +133,46 @@ export function DdxOnDemand({
         kb_latency_ms: j.kb_latency_ms,
       });
     } catch (e) {
+      // v3.10.6 — aborted requests are intentional, not failures
+      if (e instanceof Error && e.name === 'AbortError') return;
       setState({
         kind: 'failed',
         error: e instanceof Error ? e.message : 'network_error',
       });
     }
   }, [encounterId]);
+
+  // v3.10.6 — auto-fire on assessment change (when live mode is on).
+  // Safeguards: 3s debounce, min length 80 chars, hash-cache so identical
+  // text never re-fires, abort overlapping calls.
+  useEffect(() => {
+    if (!live) return;
+    if (hidden) return;
+    const text = (currentAssessment ?? '').trim() + ' :: ' + (currentCcText ?? '').trim();
+    if (text.length < 80) return;
+    // Cheap synchronous hash (32-bit FNV-1a). Same input → same hash → skip.
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    const hash = h.toString(16);
+    if (hash === lastHashRef.current) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      lastHashRef.current = hash;
+      void run();
+    }, 3000);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [live, hidden, currentAssessment, currentCcText, run]);
+
+  // Cleanup any in-flight abort + debounce on unmount
+  useEffect(() => () => {
+    abortRef.current?.abort();
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+  }, []);
 
   if (hidden) return null;
 
@@ -146,14 +196,30 @@ export function DdxOnDemand({
             On-demand sanity check. Auto-DDx also fires on Submit.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={run}
-          disabled={isLoading}
-          className="rounded-md bg-even-navy px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-even-navy-700 disabled:opacity-50"
-        >
-          {buttonLabel}
-        </button>
+        <div className="flex items-center gap-2">
+          {/* v3.10.6 — Live toggle (auto-fires DDx on assessment change) */}
+          <label
+            className="inline-flex items-center gap-1 text-[10px] text-even-ink-500"
+            title="Auto-fire DDx 3s after the assessment changes (min 80 chars)"
+          >
+            <input
+              type="checkbox"
+              checked={live}
+              onChange={(e) => setLive(e.target.checked)}
+              className="h-3 w-3"
+            />
+            Live
+            {live && <span className="rounded-full bg-emerald-100 px-1 py-0 text-[9px] font-medium text-emerald-700 ring-1 ring-emerald-200">on</span>}
+          </label>
+          <button
+            type="button"
+            onClick={run}
+            disabled={isLoading}
+            className="rounded-md bg-even-navy px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-even-navy-700 disabled:opacity-50"
+          >
+            {buttonLabel}
+          </button>
+        </div>
       </div>
 
       {state.kind === 'failed' && (
