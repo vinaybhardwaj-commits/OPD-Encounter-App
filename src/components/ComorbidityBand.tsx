@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { TierBadge } from './TierBadge';
 import { ComorbidityEditModal } from './ComorbidityEditModal';
 import type { TierBreakdown } from '@/lib/comorbidity-tier';
+import { KbEvidenceReveal } from './KbEvidenceReveal';
 
 type ApiComorbidity = {
   id: string;
@@ -249,20 +250,26 @@ export function ComorbidityBand({
                 ) : okSuggest && (
                   <div className="flex flex-wrap gap-1.5">
                     {okSuggest.findings.map((s) => (
-                      <button
-                        key={s.code}
-                        type="button"
-                        disabled={!!acceptingCode}
-                        onClick={() => acceptSuggestion(s)}
-                        title={s.rationale}
-                        className="inline-flex items-baseline gap-1 rounded-full bg-white px-2.5 py-1 text-[11px] text-violet-800 ring-1 ring-violet-300 hover:bg-violet-100 disabled:opacity-50"
-                      >
-                        <span className="font-semibold">+</span>
-                        <span className="font-mono font-semibold">{s.code}</span>
-                        <span className="truncate max-w-[10rem]">{s.label}</span>
-                        <span className="text-violet-500">{Math.round(s.confidence * 100)}%</span>
-                        {acceptingCode === s.code && <span className="text-violet-400">…</span>}
-                      </button>
+                      <span key={s.code} className="inline-flex items-start gap-1">
+                        <button
+                          type="button"
+                          disabled={!!acceptingCode}
+                          onClick={() => acceptSuggestion(s)}
+                          title={s.rationale}
+                          className="inline-flex items-baseline gap-1 rounded-full bg-white px-2.5 py-1 text-[11px] text-violet-800 ring-1 ring-violet-300 hover:bg-violet-100 disabled:opacity-50"
+                        >
+                          <span className="font-semibold">+</span>
+                          <span className="font-mono font-semibold">{s.code}</span>
+                          <span className="truncate max-w-[10rem]">{s.label}</span>
+                          <span className="text-violet-500">{Math.round(s.confidence * 100)}%</span>
+                          {acceptingCode === s.code && <span className="text-violet-400">…</span>}
+                        </button>
+                        {/* v3.10.3 — KB evidence backfill */}
+                        <KbEvidenceReveal
+                          query={`${s.code} ${s.label}`}
+                          ariaLabel={`View KB evidence for ${s.code}`}
+                        />
+                      </span>
                     ))}
                   </div>
                 )}

@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { TierBadge } from './TierBadge';
 import { TierOverridePopover, type TierOverrideValue } from './TierOverridePopover';
+import { KbEvidenceReveal } from './KbEvidenceReveal';
 import { ComorbiditySearch, type CatalogEntry } from './ComorbiditySearch';
 import type { TierBreakdown } from '@/lib/comorbidity-tier';
 
@@ -588,6 +589,8 @@ export function ComorbidityEditModal({
                         <span className="shrink-0 font-mono text-xs font-semibold text-even-navy">{s.code}</span>
                         <span className="truncate text-xs text-even-ink-800">{s.label}</span>
                         <span className="shrink-0 text-[10px] text-violet-700">{(s.confidence * 100).toFixed(0)}%</span>
+                        {/* v3.10.3 — KB evidence backfill */}
+                        <KbEvidenceReveal query={`${s.code} ${s.label}`} ariaLabel={`View KB evidence for ${s.code}`} />
                       </div>
                       {s.rationale && <div className="text-[10px] italic text-violet-600">{s.rationale}</div>}
                     </div>

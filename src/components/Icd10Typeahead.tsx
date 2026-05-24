@@ -13,6 +13,7 @@
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { Icd10Code } from '@/lib/icd10';
+import { KbEvidenceReveal } from './KbEvidenceReveal';
 
 type ApiResponse = {
   ok: boolean;
@@ -320,6 +321,8 @@ export function Icd10Typeahead({
                       <span className="shrink-0 font-mono text-xs font-semibold text-even-navy">{s.code}</span>
                       <span className="truncate text-xs text-even-ink-600">{s.label}</span>
                       <span className="shrink-0 text-[10px] text-violet-700">{(s.confidence * 100).toFixed(0)}%</span>
+                      {/* v3.10.3 — lazy KB evidence */}
+                      <KbEvidenceReveal query={`${s.code} ${s.label}`} ariaLabel={`View KB evidence for ${s.code}`} />
                     </div>
                     {s.rationale && (
                       <div className="text-[10px] italic text-violet-600">{s.rationale}</div>
