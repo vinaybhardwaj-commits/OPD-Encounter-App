@@ -495,21 +495,17 @@ export function EncounterEditor({
         />
       </Section>
 
-      <Section label="Vitals" desc="Optional — fill what was measured.">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <VitalInput label="BP sys" suffix="mmHg" value={vitals.bp_sys ?? ''} onChange={(v) => setVitals({ ...vitals, bp_sys: v })} readOnly={readOnly} />
-          <VitalInput label="BP dia" suffix="mmHg" value={vitals.bp_dia ?? ''} onChange={(v) => setVitals({ ...vitals, bp_dia: v })} readOnly={readOnly} />
-          <VitalInput label="HR" suffix="bpm" value={vitals.hr ?? ''} onChange={(v) => setVitals({ ...vitals, hr: v })} readOnly={readOnly} />
-          <VitalInput label="RR" suffix="/min" value={vitals.rr ?? ''} onChange={(v) => setVitals({ ...vitals, rr: v })} readOnly={readOnly} />
-          <VitalInput label="Temp" suffix="°C" step="0.1" value={vitals.temp_c ?? ''} onChange={(v) => setVitals({ ...vitals, temp_c: v })} readOnly={readOnly} />
-          <VitalInput label="SpO₂" suffix="%" value={vitals.spo2 ?? ''} onChange={(v) => setVitals({ ...vitals, spo2: v })} readOnly={readOnly} />
-        </div>
+      <Section label="Vitals">
+        <VitalsPillRow
+          vitals={vitals}
+          onChange={(patch) => setVitals({ ...vitals, ...patch })}
+          readOnly={readOnly}
+        />
       </Section>
 
       <Section
         n={2}
         label="Exam findings"
-        desc="What you observed."
         dictate={
           !readOnly
             ? {
@@ -524,8 +520,8 @@ export function EncounterEditor({
           value={exam}
           onChange={(e) => setExam(e.target.value)}
           disabled={readOnly}
-          rows={3}
-          placeholder="e.g., Mildly inflamed pharynx, no exudate, afebrile on exam."
+          rows={5}
+          placeholder="What you observed — general appearance, system-specific findings, anything reassuring or concerning."
           className={textareaCls}
         />
       </Section>
@@ -1254,6 +1250,294 @@ function CcChipGrid({
         })}
       </div>
     </div>
+  );
+}
+
+// v4.0.4 — VitalsPillRow renders a compact inline pill row:
+//   BP 130/82 · HR 78 · RR 16 · Temp 36.8°C · SpO₂ 97%
+// Click a pill to enter inline edit mode (number input + tab/enter to commit
+// and move to next; blur to commit; esc to cancel). Empty values show as
+// '—' which the doctor can tap to enter. ReadOnly hides edit affordances.
+// Lossless: writes back the same Vitals shape via the onChange patch.
+type VitalsPatch = Partial<{
+  bp_sys: number | '';
+  bp_dia: number | '';
+  hr: number | '';
+  rr: number | '';
+  temp_c: number | '';
+  spo2: number | '';
+}>;
+
+function VitalsPillRow({
+  vitals,
+  onChange,
+  readOnly,
+}: {
+  vitals: Vitals;
+  onChange: (patch: VitalsPatch) => void;
+  readOnly?: boolean;
+}) {
+  const [editing, setEditing] = useState<null | 'bp' | 'hr' | 'rr' | 'temp' | 'spo2'>(null);
+
+  // Local draft values for the active editor (so typing doesn't fire
+  // autosave on every keystroke).
+  const [draftBpSys, setDraftBpSys] = useState<string>('');
+  const [draftBpDia, setDraftBpDia] = useState<string>('');
+  const [draftScalar, setDraftScalar] = useState<string>('');
+
+  const openEdit = (key: 'bp' | 'hr' | 'rr' | 'temp' | 'spo2') => {
+    if (readOnly) return;
+    if (key === 'bp') {
+      setDraftBpSys(vitals.bp_sys != null && vitals.bp_sys !== '' ? String(vitals.bp_sys) : '');
+      setDraftBpDia(vitals.bp_dia != null && vitals.bp_dia !== '' ? String(vitals.bp_dia) : '');
+    } else if (key === 'hr') {
+      setDraftScalar(vitals.hr != null && vitals.hr !== '' ? String(vitals.hr) : '');
+    } else if (key === 'rr') {
+      setDraftScalar(vitals.rr != null && vitals.rr !== '' ? String(vitals.rr) : '');
+    } else if (key === 'temp') {
+      setDraftScalar(vitals.temp_c != null && vitals.temp_c !== '' ? String(vitals.temp_c) : '');
+    } else if (key === 'spo2') {
+      setDraftScalar(vitals.spo2 != null && vitals.spo2 !== '' ? String(vitals.spo2) : '');
+    }
+    setEditing(key);
+  };
+
+  const parseNum = (raw: string): number | '' => {
+    const t = raw.trim();
+    if (t === '') return '';
+    const n = Number(t);
+    return Number.isFinite(n) ? n : '';
+  };
+
+  const commit = () => {
+    if (editing === 'bp') {
+      onChange({ bp_sys: parseNum(draftBpSys), bp_dia: parseNum(draftBpDia) });
+    } else if (editing === 'hr') {
+      onChange({ hr: parseNum(draftScalar) });
+    } else if (editing === 'rr') {
+      onChange({ rr: parseNum(draftScalar) });
+    } else if (editing === 'temp') {
+      onChange({ temp_c: parseNum(draftScalar) });
+    } else if (editing === 'spo2') {
+      onChange({ spo2: parseNum(draftScalar) });
+    }
+    setEditing(null);
+  };
+
+  const cancel = () => setEditing(null);
+
+  // Display helpers
+  const fmt = (v: number | '' | null | undefined, decimals = 0) =>
+    v == null || v === '' ? '—' : decimals > 0 ? Number(v).toFixed(decimals) : String(v);
+  const bpDisplay = () => {
+    const s = vitals.bp_sys;
+    const d = vitals.bp_dia;
+    if ((s == null || s === '') && (d == null || d === '')) return '—';
+    return `${fmt(s)}/${fmt(d)}`;
+  };
+
+  const inputCls =
+    'w-12 bg-transparent text-sm font-semibold text-even-navy focus:outline-none ' +
+    'border-0 border-b border-even-blue px-0 py-0 text-center [appearance:textfield] ' +
+    '[&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none';
+
+  const pillCls = (active: boolean) =>
+    `inline-flex items-baseline gap-1 rounded-md px-2 py-1 text-sm transition ${
+      active
+        ? 'bg-even-blue-50 ring-1 ring-even-blue'
+        : readOnly
+        ? 'bg-transparent'
+        : 'bg-white hover:bg-even-ink-50 ring-1 ring-even-ink-100 hover:ring-even-ink-200 cursor-pointer'
+    }`;
+
+  const labelCls = 'text-[10px] font-semibold uppercase tracking-wider text-even-ink-500';
+  const unitCls = 'text-[10px] text-even-ink-400';
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+      {/* BP — compound pill: sys/dia */}
+      {editing === 'bp' ? (
+        <span className={pillCls(true)}>
+          <span className={labelCls}>BP</span>
+          <input
+            autoFocus
+            type="number"
+            inputMode="numeric"
+            value={draftBpSys}
+            onChange={(e) => setDraftBpSys(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                (e.currentTarget.parentElement?.querySelector('input[data-dia]') as HTMLInputElement | null)?.focus();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                cancel();
+              }
+            }}
+            className={inputCls}
+            placeholder="—"
+          />
+          <span className="text-sm text-even-ink-400">/</span>
+          <input
+            data-dia
+            type="number"
+            inputMode="numeric"
+            value={draftBpDia}
+            onChange={(e) => setDraftBpDia(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commit();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                cancel();
+              }
+            }}
+            className={inputCls}
+            placeholder="—"
+          />
+          <span className={unitCls}>mmHg</span>
+        </span>
+      ) : (
+        <button
+          type="button"
+          disabled={readOnly}
+          onClick={() => openEdit('bp')}
+          className={pillCls(false)}
+        >
+          <span className={labelCls}>BP</span>
+          <span className="text-sm font-semibold text-even-navy">{bpDisplay()}</span>
+          <span className={unitCls}>mmHg</span>
+        </button>
+      )}
+
+      <ScalarVitalPill
+        editing={editing === 'hr'}
+        label="HR"
+        unit="bpm"
+        display={fmt(vitals.hr)}
+        draft={draftScalar}
+        setDraft={setDraftScalar}
+        onOpen={() => openEdit('hr')}
+        onCommit={commit}
+        onCancel={cancel}
+        readOnly={readOnly}
+      />
+      <ScalarVitalPill
+        editing={editing === 'rr'}
+        label="RR"
+        unit="/min"
+        display={fmt(vitals.rr)}
+        draft={draftScalar}
+        setDraft={setDraftScalar}
+        onOpen={() => openEdit('rr')}
+        onCommit={commit}
+        onCancel={cancel}
+        readOnly={readOnly}
+      />
+      <ScalarVitalPill
+        editing={editing === 'temp'}
+        label="Temp"
+        unit="°C"
+        display={fmt(vitals.temp_c, 1)}
+        draft={draftScalar}
+        setDraft={setDraftScalar}
+        onOpen={() => openEdit('temp')}
+        onCommit={commit}
+        onCancel={cancel}
+        readOnly={readOnly}
+        step="0.1"
+      />
+      <ScalarVitalPill
+        editing={editing === 'spo2'}
+        label="SpO₂"
+        unit="%"
+        display={fmt(vitals.spo2)}
+        draft={draftScalar}
+        setDraft={setDraftScalar}
+        onOpen={() => openEdit('spo2')}
+        onCommit={commit}
+        onCancel={cancel}
+        readOnly={readOnly}
+      />
+    </div>
+  );
+}
+
+function ScalarVitalPill({
+  editing,
+  label,
+  unit,
+  display,
+  draft,
+  setDraft,
+  onOpen,
+  onCommit,
+  onCancel,
+  readOnly,
+  step,
+}: {
+  editing: boolean;
+  label: string;
+  unit: string;
+  display: string;
+  draft: string;
+  setDraft: (s: string) => void;
+  onOpen: () => void;
+  onCommit: () => void;
+  onCancel: () => void;
+  readOnly?: boolean;
+  step?: string;
+}) {
+  const inputCls =
+    'w-14 bg-transparent text-sm font-semibold text-even-navy focus:outline-none ' +
+    'border-0 border-b border-even-blue px-0 py-0 text-center [appearance:textfield] ' +
+    '[&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none';
+  const pillCls = editing
+    ? 'inline-flex items-baseline gap-1 rounded-md px-2 py-1 text-sm bg-even-blue-50 ring-1 ring-even-blue'
+    : `inline-flex items-baseline gap-1 rounded-md px-2 py-1 text-sm transition ${
+        readOnly
+          ? 'bg-transparent'
+          : 'bg-white hover:bg-even-ink-50 ring-1 ring-even-ink-100 hover:ring-even-ink-200 cursor-pointer'
+      }`;
+  const labelCls = 'text-[10px] font-semibold uppercase tracking-wider text-even-ink-500';
+  const unitCls = 'text-[10px] text-even-ink-400';
+
+  if (editing) {
+    return (
+      <span className={pillCls}>
+        <span className={labelCls}>{label}</span>
+        <input
+          autoFocus
+          type="number"
+          inputMode="decimal"
+          step={step}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={onCommit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              onCommit();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+          className={inputCls}
+          placeholder="—"
+        />
+        <span className={unitCls}>{unit}</span>
+      </span>
+    );
+  }
+  return (
+    <button type="button" disabled={readOnly} onClick={onOpen} className={pillCls}>
+      <span className={labelCls}>{label}</span>
+      <span className="text-sm font-semibold text-even-navy">{display}</span>
+      <span className={unitCls}>{unit}</span>
+    </button>
   );
 }
 
