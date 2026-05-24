@@ -288,6 +288,14 @@ export function RxCoherencePanel({
   );
 }
 
+type FdaCitation = {
+  source: string;
+  book: string;
+  chapter: string | null;
+  section: string | null;
+  text_excerpt: string;
+};
+
 function CoherenceRow({
   w,
   reason,
@@ -301,6 +309,29 @@ function CoherenceRow({
   onAdd: () => void;
   onOverride: () => void;
 }) {
+  // v3.10.2 — async FDA indication backfill. Fires on mount, soft-fails
+  // silently. Doctor sees the warning instantly from the static map; the
+  // FDA-label citation reveals moments later (~200ms typical) as a
+  // "View FDA label" expandable below the action row.
+  const [fda, setFda] = useState<FdaCitation[] | null>(null);
+  const [fdaOpen, setFdaOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/drugs/${encodeURIComponent(w.drug_name)}/fda-indication`);
+        const json = await res.json();
+        if (cancelled) return;
+        if (json.ok && json.indication && Array.isArray(json.indication.citations)) {
+          setFda(json.indication.citations);
+        }
+      } catch {
+        /* soft-fail */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [w.drug_name]);
+
   return (
     <li className="rounded-md border border-amber-200 bg-white p-2.5 text-xs">
       <div className="mb-1.5 flex flex-wrap items-baseline gap-2">
@@ -337,6 +368,29 @@ function CoherenceRow({
           Override
         </button>
       </div>
+      {fda && fda.length > 0 && (
+        <div className="mt-1.5">
+          <button
+            type="button"
+            onClick={() => setFdaOpen((o) => !o)}
+            className="rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 ring-1 ring-violet-200 hover:bg-violet-100"
+          >
+            {fdaOpen ? '▾' : '▸'} View FDA label · {fda.length}
+          </button>
+          {fdaOpen && (
+            <ul className="mt-1 space-y-1 border-l border-violet-200 pl-2">
+              {fda.map((c, i) => (
+                <li key={i} className="text-[10px] text-violet-800">
+                  <span className="font-medium">{c.book}</span>
+                  {c.chapter && <span className="text-even-ink-600"> — {c.chapter}</span>}
+                  {c.section && <span className="text-even-ink-500"> › {c.section}</span>}
+                  <div className="mt-0.5 italic text-even-ink-600">{c.text_excerpt.slice(0, 320)}{c.text_excerpt.length > 320 ? '…' : ''}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </li>
   );
 }

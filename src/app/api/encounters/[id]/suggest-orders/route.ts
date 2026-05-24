@@ -21,6 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { qwenJson, QwenError } from '@/lib/qwen';
+import { kbRetrieve, type KbChunk } from '@/lib/kb';
 import { loadComorbidityContext, comorbidityContextForPrompt } from '@/lib/patient-comorbidity-context';
 import { createHash } from 'node:crypto';
 
@@ -35,10 +36,30 @@ type Suggestion = {
   modality: 'lab' | 'imaging' | 'cardiology' | 'procedure';
   rationale: string;
   confidence: number;
+  /** v3.10.2 — KB chunk numbers (1-based) that ground this suggestion. */
+  citation_numbers?: number[];
+};
+
+type CitationChunk = {
+  n: number;
+  source: string;
+  book: string;
+  chapter: string | null;
+  section: string | null;
+  page: number | null;
+  similarity: number;
+  text_excerpt: string;
 };
 
 type CachedPayload =
-  | { status: 'ok'; findings: Suggestion[]; generated_at: string; latency_ms: number }
+  | {
+      status: 'ok';
+      findings: Suggestion[];
+      citations?: CitationChunk[];
+      generated_at: string;
+      latency_ms: number;
+      kb_latency_ms?: number;
+    }
   | { status: 'failed'; error: string; generated_at: string };
 
 const SYSTEM_PROMPT = `You are a clinical decision-support assistant for an Indian OPD physician. Given the patient's visit reason, active problems, and last few encounters, suggest a STARTER set of diagnostic tests the physician should consider ordering.
@@ -48,14 +69,16 @@ You receive:
 - active_problems: cached Qwen-summarised problem list
 - recent_encounters: brief one-line summary of up to 5 past completed encounters
 - allowed_catalog: an array of {service_code, display_name, sub_department} the doctor can order
+- v3.10.2: kb_context — up to 6 numbered chunks from clinical guidelines + UpToDate that may inform the workup choice.
 
 Return STRICT JSON:
 {
   "findings": [
     {
       "service_code": "<MUST be from allowed_catalog>",
-      "rationale": "<one-line clinical reason, ≤120 chars>",
-      "confidence": 0.5–0.95
+      "rationale": "<one-line clinical reason, ≤120 chars, with inline [N] markers when kb_context supports the test>",
+      "confidence": 0.5–0.95,
+      "citation_numbers": [1, 3]
     }
   ]
 }
@@ -66,6 +89,11 @@ Rules:
 - Skip tests the recent_encounters show were already ordered very recently for the same indication.
 - rationale: plain clinical English, no hedging.
 - confidence: 0.85+ for highly indicated (recurrent monitoring of known condition); 0.70+ for likely; 0.50+ for worth considering.
+- v3.10.2 CITATION RULES:
+  - When a kb_context chunk supports a recommendation, embed inline [N] in the rationale where N matches the chunk number (1-indexed).
+  - Also list those chunk numbers in citation_numbers: [N, ...].
+  - If kb_context contains nothing relevant for a suggestion, leave citation_numbers as [] and skip inline markers.
+  - Never invent citation numbers — only use numbers that appear in kb_context.
 Return ONLY the JSON object. No markdown, no prose.`;
 
 export async function GET(
@@ -162,6 +190,32 @@ export async function GET(
     // v3.9.1b — comorbidity-aware prompt context
   const comorbidityCtx = await loadComorbidityContext(enc.patient_id).catch(() => null);
 
+  // v3.10.2 — KB retrieval for workup grounding (guideline + uptodate only).
+  // Soft-fail: empty chunks → behave like pre-v3.10.2.
+  const kbQuery = [
+    visitReason,
+    problems.slice(0, 5).join(' '),
+  ].filter(Boolean).join(' · ').slice(0, 1200);
+
+  const kbT0 = Date.now();
+  const kbChunks: KbChunk[] = kbQuery.length >= 5
+    ? await kbRetrieve(kbQuery, {
+        sources: ['guideline', 'uptodate'],
+        topK: 6,
+        hyde: true,
+        timeoutMs: 20_000,
+      })
+    : [];
+  const kbLatencyMs = Date.now() - kbT0;
+
+  const kb_context = kbChunks.map((c, i) => ({
+    n: i + 1,
+    book: c.book,
+    chapter: c.chapter,
+    section: c.section,
+    text_excerpt: c.text.slice(0, 800),
+  }));
+
   const userMessage = JSON.stringify({
       visit_reason: visitReason || '(none captured)',
       active_problems: problems,
@@ -175,13 +229,14 @@ export async function GET(
         display_name: c.display_name,
         sub_department: c.sub_department,
       })),
-      ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
+      ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {}),
+      kb_context,
     });
   
     let payload: CachedPayload;
     try {
       const t0 = Date.now();
-      const result = await qwenJson<{ findings: Array<{ service_code: string; rationale: string; confidence: number }> }>(
+      const result = await qwenJson<{ findings: Array<{ service_code: string; rationale: string; confidence: number; citation_numbers?: unknown }> }>(
         SYSTEM_PROMPT,
         userMessage,
         { timeoutMs: 60_000 },
@@ -191,26 +246,53 @@ export async function GET(
       // Provenance filter: only allow service_codes that were in the sent allowed_catalog
       const allowedSet = new Set(catalog.map((c) => c.service_code));
       const catalogByCode = new Map(catalog.map((c) => [c.service_code, c]));
+      const maxCitationN = kbChunks.length;
       const cleanFindings: Suggestion[] = (result.json.findings ?? [])
         .filter((f) => f.service_code && allowedSet.has(f.service_code))
         .slice(0, 8)
         .map((f) => {
           const c = catalogByCode.get(f.service_code)!;
+          const citNums = Array.isArray(f.citation_numbers)
+            ? Array.from(new Set(
+                f.citation_numbers
+                  .map((n) => Number(n))
+                  .filter((n) => Number.isFinite(n) && n >= 1 && n <= maxCitationN),
+              )).sort((a, b) => a - b)
+            : [];
           return {
             service_code: f.service_code,
             display_name: c.display_name,
             sub_department: c.sub_department,
             modality: c.modality,
-            rationale: (f.rationale ?? '').slice(0, 140),
+            rationale: (f.rationale ?? '').slice(0, 200),
             confidence: Math.max(0, Math.min(1, Number(f.confidence) || 0.5)),
+            citation_numbers: citNums,
           };
         });
-  
+
+      // Only include chunks actually referenced by at least one finding
+      const referenced = new Set<number>();
+      for (const f of cleanFindings) for (const n of (f.citation_numbers ?? [])) referenced.add(n);
+      const citations: CitationChunk[] = kbChunks
+        .map((c, i) => ({
+          n: i + 1,
+          source: c.source,
+          book: c.book,
+          chapter: c.chapter,
+          section: c.section,
+          page: c.page_start,
+          similarity: c.similarity,
+          text_excerpt: c.text.slice(0, 600),
+        }))
+        .filter((c) => referenced.has(c.n));
+
       payload = {
         status: 'ok',
         findings: cleanFindings,
+        citations,
         generated_at: new Date().toISOString(),
         latency_ms,
+        kb_latency_ms: kbLatencyMs,
       };
     } catch (e) {
       const msg = e instanceof QwenError

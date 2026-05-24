@@ -20,10 +20,29 @@ type Suggestion = {
   modality: CatalogRow['modality'];
   rationale: string;
   confidence: number;
+  /** v3.10.2 — KB chunk numbers (1-based) that ground this suggestion. */
+  citation_numbers?: number[];
+};
+
+type CitationChunk = {
+  n: number;
+  source: string;
+  book: string;
+  chapter: string | null;
+  section: string | null;
+  page: number | null;
+  text_excerpt: string;
 };
 
 type Payload =
-  | { status: 'ok'; findings: Suggestion[]; generated_at: string; latency_ms: number }
+  | {
+      status: 'ok';
+      findings: Suggestion[];
+      citations?: CitationChunk[];
+      generated_at: string;
+      latency_ms: number;
+      kb_latency_ms?: number;
+    }
   | { status: 'failed'; error: string; generated_at: string };
 
 const MODALITY_BADGE: Record<CatalogRow['modality'], string> = {
@@ -102,28 +121,88 @@ export function SuggestedOrderChips({
       </div>
 
       <div className="flex flex-wrap gap-1.5">
-        {payload.findings.map((f) => {
-          const inCart = alreadyInCart.has(f.service_code);
-          return (
-            <button
-              key={f.service_code}
-              type="button"
-              onClick={() => !inCart && onAdd(f)}
-              disabled={inCart}
-              title={`${f.rationale} · confidence ${(f.confidence * 100).toFixed(0)}%`}
-              className={`inline-flex items-baseline gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-                inCart
-                  ? 'cursor-default border-even-ink-200 bg-even-ink-100 text-even-ink-400'
-                  : 'border-even-blue-200 bg-white text-even-navy hover:bg-even-blue-50'
-              } ${MODALITY_BADGE[f.modality]}`}
-            >
-              <span>{inCart ? '✓' : '+'}</span>
-              <span className="font-medium">{f.display_name}</span>
-              <span className="text-[10px] opacity-70">{(f.confidence * 100).toFixed(0)}%</span>
-            </button>
-          );
-        })}
+        {payload.findings.map((f) => (
+          <SuggestedOrderChip
+            key={f.service_code}
+            finding={f}
+            inCart={alreadyInCart.has(f.service_code)}
+            citations={(payload.status === 'ok' ? payload.citations : undefined) ?? []}
+            onAdd={onAdd}
+          />
+        ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * v3.10.2 — single suggestion chip with KB citation reveal.
+ * - The chip itself still adds to cart on click.
+ * - If the suggestion has citation_numbers, a small violet "i" button
+ *   appears beside it; clicking it reveals a tiny citation list under
+ *   the chip row.
+ */
+function SuggestedOrderChip({
+  finding,
+  inCart,
+  citations,
+  onAdd,
+}: {
+  finding: Suggestion;
+  inCart: boolean;
+  citations: CitationChunk[];
+  onAdd: (s: Suggestion) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const cits = finding.citation_numbers ?? [];
+  const myCitations = citations.filter((c) => cits.includes(c.n));
+  return (
+    <span className="inline-flex flex-col">
+      <span className="inline-flex items-baseline gap-1">
+        <button
+          type="button"
+          onClick={() => !inCart && onAdd(finding)}
+          disabled={inCart}
+          title={`${finding.rationale} · confidence ${(finding.confidence * 100).toFixed(0)}%`}
+          className={`inline-flex items-baseline gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
+            inCart
+              ? 'cursor-default border-even-ink-200 bg-even-ink-100 text-even-ink-400'
+              : 'border-even-blue-200 bg-white text-even-navy hover:bg-even-blue-50'
+          } ${MODALITY_BADGE[finding.modality]}`}
+        >
+          <span>{inCart ? '✓' : '+'}</span>
+          <span className="font-medium">{finding.display_name}</span>
+          <span className="text-[10px] opacity-70">{(finding.confidence * 100).toFixed(0)}%</span>
+        </button>
+        {myCitations.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            className={`inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-[9px] font-semibold ring-1 ${
+              open
+                ? 'bg-violet-200 text-violet-900 ring-violet-300'
+                : 'bg-violet-50 text-violet-700 ring-violet-200 hover:bg-violet-100'
+            }`}
+            title={`${myCitations.length} clinical reference${myCitations.length === 1 ? '' : 's'}`}
+          >
+            {open ? '▾' : 'i'}{myCitations.length > 1 ? `·${myCitations.length}` : ''}
+          </button>
+        )}
+      </span>
+      {open && myCitations.length > 0 && (
+        <ul className="mt-1 space-y-0.5 border-l border-violet-200 pl-2">
+          {myCitations.map((c) => (
+            <li key={c.n} className="text-[10px] text-violet-800">
+              <span className="font-mono mr-1 text-violet-500">[{c.n}]</span>
+              <span className="font-medium">{c.book}</span>
+              {c.chapter && <span className="text-even-ink-600"> — {c.chapter}</span>}
+              {c.section && <span className="text-even-ink-500"> › {c.section}</span>}
+              {c.page && <span className="font-mono text-even-ink-400"> p{c.page}</span>}
+              <div className="mt-0.5 italic text-even-ink-600">{c.text_excerpt.slice(0, 280)}{c.text_excerpt.length > 280 ? '…' : ''}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </span>
   );
 }

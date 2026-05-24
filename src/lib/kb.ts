@@ -337,6 +337,77 @@ export async function kbAsk(
   };
 }
 
+// ----- Drug indication helper (v3.10.2 Rx coherence backfill) -----
+
+export type KbDrugIndication = {
+  drug_name: string;
+  citations: Array<{
+    source: string;
+    book: string;
+    chapter: string | null;
+    section: string | null;
+    text_excerpt: string;
+    similarity: number;
+  }>;
+};
+
+/**
+ * kbDrugIndication — fast non-LLM lookup for the OpenFDA
+ * indications_and_usage section of a given drug. Used to back the
+ * v3.9.4 Rx coherence warnings with FDA-label citations.
+ *
+ * Strategy: direct SQL filter on source='openfda' AND chapter ILIKE
+ * '%<drug_name>%' AND chunk_type='indications_and_usage'. No vector
+ * search needed — exact-name match is more precise for drug labels.
+ *
+ * Returns up to 2 matching chunks (typically: the indication section
+ * + the precautions section if cleanly chunked). Empty array if no
+ * match — caller's warning still shows from the static map.
+ */
+export async function kbDrugIndication(
+  drugName: string,
+): Promise<KbDrugIndication | null> {
+  const pool = kbPool();
+  if (!pool) return null;
+  const name = drugName.toLowerCase().trim();
+  if (name.length < 3) return null;
+
+  try {
+    const { rows } = await pool.query<{
+      source: string;
+      book: string;
+      chapter: string | null;
+      section: string | null;
+      text: string;
+    }>(
+      `SELECT source, book, chapter, section, text
+       FROM mksap_chunks
+       WHERE source = 'openfda'
+         AND lower(chapter) LIKE '%' || $1 || '%'
+         AND (chunk_type = 'indications_and_usage' OR section ILIKE '%indications%')
+       ORDER BY
+         CASE WHEN chunk_type = 'indications_and_usage' THEN 0 ELSE 1 END,
+         length(chapter) ASC
+       LIMIT 2`,
+      [name],
+    );
+    if (rows.length === 0) return null;
+    return {
+      drug_name: drugName,
+      citations: rows.map((r) => ({
+        source: r.source,
+        book: r.book,
+        chapter: r.chapter,
+        section: r.section,
+        text_excerpt: r.text.slice(0, 600),
+        similarity: 1, // exact name match, not vector-scored
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ----- Health -----
 
 export type KbHealth = {
