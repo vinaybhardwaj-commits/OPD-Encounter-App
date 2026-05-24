@@ -694,8 +694,7 @@ export function EncounterEditor({
 
       <Section
         n={6}
-        label="Prescription"
-        desc="Add drugs; chips fill from defaults. Tap to override."
+        label="Treatment"
         dictate={!readOnly ? { encounterId: initial.id, section: 'prescription' } : undefined}
       >
         <PrescriptionCompose
@@ -709,7 +708,7 @@ export function EncounterEditor({
         <RxCoherencePanel state={rxCoherence} mode="inline" />
       </Section>
 
-      <Section n={7} label="Disposition" desc="Required to submit." required>
+      <Section n={7} label="Plan" required>
         {(() => {
           // PH.4: re-order the 6 standard buttons so the AI-recommended
           // one is leftmost, and stamp it with a violet dot.
@@ -735,24 +734,22 @@ export function EncounterEditor({
                       setDispositionLabel(null);
                     }}
                     aria-pressed={selected}
-                    className={`relative rounded-xl border p-3 text-left transition disabled:cursor-not-allowed ${
+                    title={d.hint}
+                    className={`relative rounded-lg px-3 py-2 text-left text-xs font-semibold transition disabled:cursor-not-allowed ring-1 ${
                       selected
-                        ? 'border-even-blue bg-even-blue text-white shadow-sm'
-                        : 'border-even-ink-200 bg-white text-even-navy hover:border-even-blue-300'
+                        ? 'bg-even-blue text-white ring-even-blue shadow-sm'
+                        : 'bg-white text-even-navy ring-even-ink-200 hover:ring-even-blue-300'
                     }`}
                   >
                     {isAi && (
                       <span
                         aria-label="AI-recommended"
-                        className={`absolute right-2 top-2 inline-block h-1.5 w-1.5 rounded-full ${
+                        className={`absolute right-1.5 top-1.5 inline-block h-1.5 w-1.5 rounded-full ${
                           selected ? 'bg-white' : 'bg-violet-500'
                         }`}
                       />
                     )}
-                    <div className="text-sm font-semibold">{d.label}</div>
-                    <div className={`text-[11px] ${selected ? 'text-white/80' : 'text-even-ink-500'}`}>
-                      {d.hint}
-                    </div>
+                    {d.label}
                   </button>
                 );
               })}
@@ -761,49 +758,41 @@ export function EncounterEditor({
         })()}
 
         {aiSafe.disposition_additions.length > 0 && (
-          <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50/60 p-2">
-            <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-800">
-              <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
+          <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-700">
+              <span aria-hidden>✨</span>
               For this patient
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {aiSafe.disposition_additions.map((label) => {
-                const selected = dispositionLabel === label;
-                return (
-                  <button
-                    key={`disp-add-${label}`}
-                    type="button"
-                    disabled={readOnly}
-                    onClick={() => {
-                      // Patient-specific dispositions map to 'refer' under
-                      // the hood (most are specialist hand-offs), with
-                      // the override label persisted for the PDF.
-                      setDisposition('refer');
-                      setDispositionLabel(label);
-                      // If the addition looks like "Refer to Dr. X · Spec",
-                      // pre-fill the referral target with the part after
-                      // "Refer to " so the doctor doesn't have to retype.
-                      const m = /^Refer to\s+(.+)$/i.exec(label);
-                      if (m) setReferralTarget(m[1]);
-                    }}
-                    aria-pressed={selected}
-                    className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-left transition disabled:cursor-not-allowed ${
-                      selected
-                        ? 'border-violet-500 bg-violet-600 text-white shadow-sm'
-                        : 'border-violet-300 bg-white text-violet-900 hover:border-violet-500'
-                    }`}
-                  >
-                    <span
-                      aria-hidden
-                      className={`inline-block h-1.5 w-1.5 rounded-full ${
-                        selected ? 'bg-white' : 'bg-violet-500'
-                      }`}
-                    />
-                    <span className="text-xs font-semibold">{label}</span>
-                  </button>
-                );
-              })}
-            </div>
+            </span>
+            {aiSafe.disposition_additions.map((label) => {
+              const selected = dispositionLabel === label;
+              return (
+                <button
+                  key={`disp-add-${label}`}
+                  type="button"
+                  disabled={readOnly}
+                  onClick={() => {
+                    // Patient-specific dispositions map to 'refer' under
+                    // the hood (most are specialist hand-offs), with
+                    // the override label persisted for the PDF.
+                    setDisposition('refer');
+                    setDispositionLabel(label);
+                    // If the addition looks like "Refer to Dr. X · Spec",
+                    // pre-fill the referral target with the part after
+                    // "Refer to " so the doctor doesn't have to retype.
+                    const m = /^Refer to\s+(.+)$/i.exec(label);
+                    if (m) setReferralTarget(m[1]);
+                  }}
+                  aria-pressed={selected}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed ${
+                    selected
+                      ? 'bg-violet-600 text-white shadow-sm'
+                      : 'bg-violet-50 text-violet-900 ring-1 ring-violet-300 hover:ring-violet-500'
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
           </div>
         )}
 
