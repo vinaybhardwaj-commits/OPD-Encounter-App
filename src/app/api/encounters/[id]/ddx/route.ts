@@ -23,6 +23,7 @@ import { NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { qwenJson, QwenError } from '@/lib/qwen';
+import { kbRetrieve, type KbChunk } from '@/lib/kb';
 import { loadComorbidityContext, comorbidityContextForPrompt } from '@/lib/patient-comorbidity-context';
 
 export const runtime = 'nodejs';
@@ -34,14 +35,30 @@ type DdxFinding = {
   likelihood: 'high' | 'medium' | 'low';
   rationale: string;
   source_encounter_ids: string[];
+  /** v3.10.1 — KB chunk indices (1-based) that ground this diagnosis. */
+  citation_numbers: number[];
+};
+
+type CitationChunk = {
+  n: number;
+  source: string;
+  book: string;
+  chapter: string | null;
+  section: string | null;
+  page: number | null;
+  similarity: number;
+  text_excerpt: string;
 };
 
 type DdxPayload =
   | {
       status: 'ok';
       findings: DdxFinding[];
+      /** v3.10.1 — full ordered chunk list. Findings reference by 1-based index. */
+      citations: CitationChunk[];
       scanned_at: string;
       latency_ms: number;
+      kb_latency_ms?: number;
     }
   | {
       status: 'failed';
@@ -57,6 +74,7 @@ You receive:
 - This encounter's working assessment (may be partial)
 - The patient's cached problem list + active medications + allergies
 - Up to 5 past completed encounters with id + chief complaint + assessment
+- v3.10.1: A "kb_context" field with up to 8 numbered clinical reference chunks retrieved from MKSAP, StatPearls, UpToDate, OpenFDA, PubMed, textbooks, and clinical guidelines.
 
 Return STRICT JSON:
 {
@@ -64,8 +82,9 @@ Return STRICT JSON:
     {
       "condition": "<diagnosis name>",
       "likelihood": "high" | "medium" | "low",
-      "rationale": "<one short clinical sentence>",
-      "source_encounter_ids": ["<past encounter id that informs this>", ...]
+      "rationale": "<one short clinical sentence with inline [N] citations to kb_context where N is the 1-based chunk number>",
+      "source_encounter_ids": ["<past encounter id that informs this>", ...],
+      "citation_numbers": [1, 3]
     }
   ]
 }
@@ -75,6 +94,10 @@ Rules:
 - Skip findings the doctor has clearly already considered (look at the working assessment).
 - DO NOT speculate without evidence. If clinical data is sparse, return fewer findings or none.
 - Cite past encounters in source_encounter_ids when a finding is informed by recurrence, prior workup, or chronicity. Empty array when the finding is purely from today's encounter.
+- v3.10.1 CITATION RULES:
+  - When kb_context supports a finding, embed inline [N] markers in the rationale where N matches the kb_context chunk number (1-indexed).
+  - Also list those chunk numbers in citation_numbers: [N, ...] for the diagnosis.
+  - If kb_context contains nothing relevant for a finding, leave citation_numbers as [] and skip inline markers — do not invent citations.
 - One sentence rationale max. No hedging language.
 
 Return ONLY the JSON object. No prose, no markdown.`;
@@ -198,11 +221,39 @@ export async function POST(
 
   // v3.9.1b — comorbidity-aware prompt context
   const comorbidityCtx = await loadComorbidityContext(enc.patient_id).catch(() => null);
+
+  // v3.10.1 — KB retrieval. Build a clinical query from cc + assessment;
+  // HyDE-expand → embed → top-8 chunks from MKSAP/StatPearls/UpToDate/etc.
+  // Soft-fail: if KB is unreachable, kbChunks stays empty and DDx degrades
+  // to model-knowledge-only (same as pre-v3.10.1 behavior).
+  const ddxQuery = [
+    today.chief_complaint_text ?? '',
+    (today.chief_complaint_chips ?? []).join(' '),
+    today.assessment_text ?? '',
+    background.active_problems.slice(0, 5).join(' '),
+  ].filter(Boolean).join(' · ').slice(0, 1500);
+
+  const kbT0 = Date.now();
+  const kbChunks: KbChunk[] = ddxQuery.length >= 5
+    ? await kbRetrieve(ddxQuery, { topK: 8, hyde: true, timeoutMs: 25_000 })
+    : [];
+  const kbLatencyMs = Date.now() - kbT0;
+
+  const kb_context = kbChunks.map((c, i) => ({
+    n: i + 1,
+    book: c.book,
+    chapter: c.chapter,
+    section: c.section,
+    page: c.page_start,
+    text_excerpt: c.text.slice(0, 1200),
+  }));
+
   const userMessage = JSON.stringify({
     today,
     background,
     past_encounters,
     ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {}),
+    kb_context,
   });
 
   const scanned_at = new Date().toISOString();
@@ -214,10 +265,12 @@ export async function POST(
         likelihood?: string;
         rationale?: string;
         source_encounter_ids?: unknown;
+        citation_numbers?: unknown;
       }>;
     }>(SYSTEM_PROMPT, userMessage, { timeoutMs: 90_000 });
 
     const validIds = new Set(past_encounters.map((p) => p.id));
+    const maxCitationN = kbChunks.length;
     const findings: DdxFinding[] = [];
     for (const f of result.json.findings ?? []) {
       const condition = String(f.condition ?? '').trim();
@@ -228,20 +281,48 @@ export async function POST(
             .map(String)
             .filter((s): s is string => validIds.has(s))
         : [];
+      const citNums = Array.isArray(f.citation_numbers)
+        ? Array.from(new Set(
+            f.citation_numbers
+              .map((n) => Number(n))
+              .filter((n) => Number.isFinite(n) && n >= 1 && n <= maxCitationN),
+          )).sort((a, b) => a - b)
+        : [];
       findings.push({
         condition: condition.slice(0, 120),
         likelihood,
-        rationale: String(f.rationale ?? '').slice(0, 400),
+        rationale: String(f.rationale ?? '').slice(0, 500),
         source_encounter_ids: srcIds,
+        citation_numbers: citNums,
       });
       if (findings.length >= 5) break;
     }
 
+    // v3.10.1 — only include citations actually referenced by at least one
+    // finding (keeps the audit log small and avoids tempting the UI to
+    // render irrelevant context).
+    const referenced = new Set<number>();
+    for (const f of findings) for (const n of f.citation_numbers) referenced.add(n);
+    const citations: CitationChunk[] = kbChunks
+      .map((c, i) => ({
+        n: i + 1,
+        source: c.source,
+        book: c.book,
+        chapter: c.chapter,
+        section: c.section,
+        page: c.page_start,
+        similarity: c.similarity,
+        text_excerpt: c.text.slice(0, 600),
+      }))
+      .filter((c) => referenced.has(c.n));
+
     payload = {
       status: 'ok',
       findings,
+      citations,
       scanned_at,
       latency_ms: result.latency_ms,
+      kb_latency_ms: kbLatencyMs,
     };
   } catch (e) {
     const msg =
