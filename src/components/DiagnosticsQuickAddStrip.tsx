@@ -207,21 +207,15 @@ export function DiagnosticsQuickAddStrip({
   const cceCount = cart.filter((c) => c.source === 'cce_prestage').length;
 
   return (
-    <div className="rounded-xl border border-even-ink-100 bg-white">
-      <div className="border-b border-even-ink-50 px-4 py-3">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-even-navy">
-            Diagnostics · ✨
-          </h2>
-          <p className="text-[11px] text-even-ink-400">
-            {cceCount > 0
-              ? `${cceCount} CCE pre-staged · review + confirm.`
-              : 'Order tests; chips fill from defaults. Tap to override.'}
-          </p>
-        </div>
-      </div>
+    // v4.0.5 — outer chrome lifted to <Section n=4>; this is just the body.
+    <div>
+      {cceCount > 0 && (
+        <p className="mb-2 text-[11px] text-violet-700">
+          {cceCount} CCE pre-staged · review + confirm.
+        </p>
+      )}
 
-      <div className="px-4 py-4 space-y-3">
+      <div className="space-y-3">
         {confirmedMessage && (
           <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
             ✓ {confirmedMessage}

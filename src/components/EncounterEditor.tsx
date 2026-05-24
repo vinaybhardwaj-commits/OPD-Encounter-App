@@ -526,28 +526,45 @@ export function EncounterEditor({
         />
       </Section>
 
-      {/* Polish #1 — DDx on-demand button + inline results panel.
-          Mounted above Assessment so the doctor can pull a sanity-check
-          DDx mid-encounter, not just at submit time. */}
+      {/* v4.0.5 — Section 3 — Differential. DdxOnDemand wraps in a numbered
+          collapsible Section; the inner header was removed in v4.0.5 so the
+          Section heading is the sole title. */}
       {!readOnly && (
-        <DdxOnDemand
+        <Section
+          n={3}
+          label="Differential"
+          collapsible
           encounterId={initial.id}
-          initialPayload={initial.ddx_findings ?? null}
-          hidden={initial.status === 'completed'}
-          currentAssessment={assessment}
-          currentCcText={cc}
-        />
+          sectionKey="differential"
+          defaultCollapsed={!initial.ddx_findings}
+        >
+          <DdxOnDemand
+            encounterId={initial.id}
+            initialPayload={initial.ddx_findings ?? null}
+            hidden={initial.status === 'completed'}
+            currentAssessment={assessment}
+            currentCcText={cc}
+          />
+        </Section>
       )}
 
-      {/* v3.2a — Diagnostics inline quick-add strip (Add-a-drug-style).
-          Sits between DDx and Assessment because diagnostics confirm
-          the differential. Writes to the new diagnostic_orders table;
-          lab tech inbox cutover ships in v3.0b. v3.5a adds passive
-          Qwen context chips; v3.5b adds Qwen-NLP free-text suggest. */}
-      <DiagnosticsQuickAddStrip
-        encounterId={initial.id}
-        readOnly={readOnly || initial.status === 'completed'}
-      />
+      {/* v4.0.5 — Section 4 — Diagnostics. DiagnosticsQuickAddStrip wraps in
+          a numbered collapsible Section. Default expanded (most encounters
+          benefit from seeing the quick-add chips). */}
+      {!(readOnly || initial.status === 'completed') && (
+        <Section
+          n={4}
+          label="Diagnostics"
+          collapsible
+          encounterId={initial.id}
+          sectionKey="diagnostics"
+        >
+          <DiagnosticsQuickAddStrip
+            encounterId={initial.id}
+            readOnly={readOnly || initial.status === 'completed'}
+          />
+        </Section>
+      )}
 
       <Section
         n={5}

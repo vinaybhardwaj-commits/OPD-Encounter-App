@@ -186,16 +186,9 @@ export function DdxOnDemand({
       : 'Refresh DDx';
 
   return (
-    <section className="rounded-xl border border-even-ink-200 bg-white p-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-even-ink-500">
-            Differential diagnosis · ✨
-          </p>
-          <p className="text-[10px] text-even-ink-400">
-            On-demand sanity check. Auto-DDx also fires on Submit.
-          </p>
-        </div>
+    // v4.0.5 — outer chrome moved up to <Section n=3>; this is just the body.
+    <div>
+      <div className="flex flex-wrap items-baseline justify-end gap-2">
         <div className="flex items-center gap-2">
           {/* v3.10.6 — Live toggle (auto-fires DDx on assessment change) */}
           <label
@@ -261,7 +254,7 @@ export function DdxOnDemand({
           </p>
         </>
       )}
-    </section>
+    </div>
   );
 }
 
