@@ -33,7 +33,6 @@
 import { NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
-import { splitSqlStatements } from '@/lib/migrations';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -1045,14 +1044,15 @@ export async function POST(req: Request) {
 
   for (const {name, sql} of CHUNKS) {
     const chunkStart = Date.now();
-    const stmts = splitSqlStatements(sql);
+    // Feed the whole chunk to pg as a multi-statement simple query. This
+    // lets PostgreSQL parse the SQL itself (so semicolons inside single-
+    // quoted strings are handled correctly). Each chunk already wraps
+    // its own BEGIN/COMMIT.
     const client = await pool.connect();
     let succeeded = 0;
     try {
-      for (const stmt of stmts) {
-        await client.query(stmt);
-        succeeded++;
-      }
+      await client.query(sql);
+      succeeded = 1;
       chunkResults.push({
         chunk: name,
         statements: succeeded,
