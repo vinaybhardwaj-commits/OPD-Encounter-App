@@ -5,14 +5,18 @@
  * transcript back, and (optionally) hands the transcript to the parent
  * so the section field can be auto-filled.
  *
- * Flow (M5.1):
+ * Flow (v4.1.4):
  *   1. Idle. Tap → request mic permission, start MediaRecorder.
  *   2. Recording. Pulsing pink ring + MM:SS ticker. Tap again to stop.
  *   3. Saving. POST multipart (audio + section + duration) to
- *      /api/encounters/[id]/dictations. Server uploads to Blob,
- *      transcribes via Deepgram, returns the row + transcript.
+ *      /api/encounters/[id]/dictations. Server uploads to Blob, then
+ *      runs Deepgram + Whisper (Mac Mini) in parallel and qwen2.5:14b
+ *      judges the pair. Winning transcript comes back along with the
+ *      full compare result (scores, latencies, judge reasoning).
  *   4. Done. Show "✓ MM:SS" briefly; if transcript came back, call
- *      onTranscript so the parent can insert it.
+ *      onTranscript so the parent can insert it. Below the button, a
+ *      compare pill shows the scores + ⬇ download icons for both
+ *      engines' transcripts.
  *
  * Falls back gracefully if MediaRecorder / getUserMedia isn't available
  * (e.g. http context) — still posts a JSON-only row marking intent.
@@ -25,6 +29,31 @@ type Section =
   | 'assessment'
   | 'prescription'
   | 'disposition';
+
+type EnginePayload = {
+  transcript: string | null;
+  latency_ms: number;
+  error: string | null;
+  confidence?: number | null;
+};
+
+type JudgePayload = {
+  winner: 'deepgram' | 'whisper' | 'tie' | null;
+  deepgram_score: number | null;
+  whisper_score: number | null;
+  delta_score: number | null;
+  reasoning: string | null;
+  latency_ms: number;
+  error: string | null;
+};
+
+type ComparePayload = {
+  id: string | null;
+  deepgram: EnginePayload;
+  whisper: EnginePayload;
+  judge: JudgePayload;
+  total_elapsed_ms: number;
+};
 
 export type DictateButtonProps = {
   encounterId: string;
@@ -43,6 +72,8 @@ export function DictateButton({
 }: DictateButtonProps) {
   const [state, setState] = useState<State>('idle');
   const [seconds, setSeconds] = useState(0);
+  // v4.1.4 — compare result from the dual-engine run.
+  const [compare, setCompare] = useState<ComparePayload | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const startRef = useRef<number | null>(null);
@@ -146,6 +177,7 @@ export function DictateButton({
       const j = (await res.json()) as {
         ok?: boolean;
         dictation?: { transcript_text?: string | null; transcribe_error?: string | null };
+        compare?: ComparePayload;
         error?: string;
       };
       if (!res.ok || !j.ok) {
@@ -157,6 +189,7 @@ export function DictateButton({
       setState('saved');
       const transcript = j.dictation?.transcript_text;
       if (transcript && onTranscript) onTranscript(transcript);
+      if (j.compare) setCompare(j.compare);
       if (j.dictation?.transcribe_error) {
         setErrorMsg(`Audio saved, transcription failed: ${j.dictation.transcribe_error}`);
       }
@@ -214,7 +247,118 @@ export function DictateButton({
           {errorMsg.length > 40 ? errorMsg.slice(0, 38) + '…' : errorMsg}
         </span>
       )}
+      {compare && <ComparePill compare={compare} />}
     </span>
+  );
+}
+
+/**
+ * Pill that surfaces the dual-engine compare result inline next to the
+ * dictate button. Shows the winner, both scores, the delta, and a
+ * one-line judge reasoning on hover. Two ⬇ icons download the raw
+ * Deepgram / Whisper transcripts as .txt.
+ */
+function ComparePill({ compare }: { compare: ComparePayload }) {
+  const j = compare.judge;
+  const winner = j.winner;
+  const dg = compare.deepgram;
+  const w = compare.whisper;
+
+  const winnerLabel =
+    winner === 'deepgram'
+      ? 'Deepgram'
+      : winner === 'whisper'
+        ? 'Whisper'
+        : winner === 'tie'
+          ? 'Tie'
+          : '—';
+
+  const winnerColor =
+    winner === 'whisper'
+      ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+      : winner === 'deepgram'
+        ? 'text-violet-700 bg-violet-50 border-violet-200'
+        : winner === 'tie'
+          ? 'text-amber-700 bg-amber-50 border-amber-200'
+          : 'text-even-ink-500 bg-white border-even-ink-200';
+
+  const scoreDg = j.deepgram_score !== null ? j.deepgram_score.toFixed(1) : '—';
+  const scoreW = j.whisper_score !== null ? j.whisper_score.toFixed(1) : '—';
+  const delta = j.delta_score !== null ? `Δ ${j.delta_score.toFixed(1)}` : '';
+
+  const dgMs = dg.latency_ms ? `${(dg.latency_ms / 1000).toFixed(1)}s` : '–';
+  const wMs = w.latency_ms ? `${(w.latency_ms / 1000).toFixed(1)}s` : '–';
+  const jMs = j.latency_ms ? `${(j.latency_ms / 1000).toFixed(1)}s` : '–';
+
+  const titleText = j.reasoning
+    ? `${j.reasoning} (Deepgram ${dgMs} · Whisper ${wMs} · Judge ${jMs})`
+    : `Deepgram ${dgMs} · Whisper ${wMs} · Judge ${jMs}`;
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] ${winnerColor}`}
+      title={titleText}
+    >
+      <span className="font-semibold uppercase tracking-wider">{winnerLabel} wins</span>
+      <span className="text-even-ink-500 font-mono tabular-nums">
+        DG {scoreDg} · W {scoreW} {delta && <span className="text-even-ink-400">· {delta}</span>}
+      </span>
+      <span className="text-even-ink-400">·</span>
+      <span className="text-even-ink-400 font-mono">{dgMs}/{wMs}</span>
+      {compare.id && (
+        <>
+          <DownloadIcon
+            engine="deepgram"
+            compareId={compare.id}
+            disabled={!dg.transcript}
+            label="Deepgram"
+          />
+          <DownloadIcon
+            engine="whisper"
+            compareId={compare.id}
+            disabled={!w.transcript}
+            label="Whisper"
+          />
+        </>
+      )}
+    </span>
+  );
+}
+
+function DownloadIcon({
+  engine,
+  compareId,
+  disabled,
+  label,
+}: {
+  engine: 'deepgram' | 'whisper';
+  compareId: string;
+  disabled: boolean;
+  label: string;
+}) {
+  const href = `/api/transcribe-compare/${compareId}/download/${engine}`;
+  const baseClass =
+    'inline-flex items-center justify-center w-4 h-4 rounded text-[9px]';
+  if (disabled) {
+    return (
+      <span
+        className={`${baseClass} text-even-ink-300 cursor-not-allowed`}
+        title={`${label} transcript unavailable`}
+        aria-disabled
+      >
+        ⬇
+      </span>
+    );
+  }
+  return (
+    <a
+      href={href}
+      className={`${baseClass} text-even-ink-500 hover:text-even-navy hover:bg-even-ink-50`}
+      title={`Download ${label} transcript`}
+      download
+    >
+      ⬇
+    </a>
   );
 }
 

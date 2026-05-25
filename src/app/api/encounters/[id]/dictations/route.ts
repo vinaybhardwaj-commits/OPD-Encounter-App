@@ -23,6 +23,7 @@ import { put } from '@vercel/blob';
 import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
 import { transcribeAudio } from '@/lib/transcribe';
+import { runTranscriptionCompare } from '@/lib/transcribe-compare';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -177,12 +178,16 @@ export async function POST(
     );
   }
 
-  // 2. Transcribe (inline; short clips return in 1-3s)
-  const tx = await transcribeAudio(Buffer.from(audioBuffer), mime);
-  const transcript = tx.ok ? tx.transcript : null;
-  const confidence = tx.ok ? tx.confidence : null;
+  // 2. Dual-engine compare — Deepgram + Whisper in parallel, qwen judge.
+  //    v4.1.4 — replaces the single-Deepgram call. winning_transcript
+  //    becomes the section text; both transcripts persist.
+  const cmp = await runTranscriptionCompare(Buffer.from(audioBuffer), mime, {
+    context: `Section: ${section}. OPD encounter dictation.`,
+  });
+  const transcript = cmp.winning_transcript;
+  const confidence = cmp.deepgram.confidence ?? null;
 
-  // 3. Store row
+  // 3. Store the section_dictations row first (transcript = winner)
   const { rows } = await pool.query<{ id: string; created_at: string }>(
     `INSERT INTO section_dictations
        (encounter_id, section, audio_blob_url, duration_seconds, transcript_text)
@@ -190,6 +195,41 @@ export async function POST(
      RETURNING id, created_at`,
     [id, section, audioBlobUrl, duration, transcript],
   );
+  const dictationId = rows[0].id;
+
+  // 3a. Store the transcription_comparisons row (v36).
+  //     Best-effort — a failure here shouldn't block the dictation.
+  let compareId: string | null = null;
+  try {
+    const { rows: cmpRows } = await pool.query<{ id: string }>(
+      `INSERT INTO transcription_comparisons (
+         encounter_id, section_dictation_id, audio_blob_url, audio_duration_seconds, audio_mime, section,
+         deepgram_transcript, deepgram_confidence, deepgram_latency_ms, deepgram_error,
+         whisper_transcript, whisper_latency_ms, whisper_error,
+         judge_winner, judge_deepgram_score, judge_whisper_score, judge_delta_score, judge_reasoning, judge_latency_ms, judge_error,
+         total_elapsed_ms
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6,
+         $7, $8, $9, $10,
+         $11, $12, $13,
+         $14, $15, $16, $17, $18, $19, $20,
+         $21
+       ) RETURNING id`,
+      [
+        id, dictationId, audioBlobUrl, duration, mime, section,
+        cmp.deepgram.transcript, cmp.deepgram.confidence ?? null, cmp.deepgram.latency_ms, cmp.deepgram.error,
+        cmp.whisper.transcript, cmp.whisper.latency_ms, cmp.whisper.error,
+        cmp.judge.winner, cmp.judge.deepgram_score, cmp.judge.whisper_score, cmp.judge.delta_score, cmp.judge.reasoning, cmp.judge.latency_ms, cmp.judge.error,
+        cmp.total_elapsed_ms,
+      ],
+    );
+    compareId = cmpRows[0].id;
+  } catch (e) {
+    // Logged — but don't fail the dictation. Most likely cause: v36
+    // migration hasn't been applied yet on this DB. The winning transcript
+    // is still in section_dictations.
+    console.warn('transcription_comparisons insert failed', e);
+  }
 
   return NextResponse.json({
     ok: true,
@@ -200,9 +240,16 @@ export async function POST(
       duration_seconds: duration,
       transcript_text: transcript,
       confidence,
-      transcribe_latency_ms: tx.ok ? tx.latency_ms : null,
-      transcribe_error: tx.ok ? null : tx.error,
+      transcribe_latency_ms: cmp.deepgram.latency_ms || null,
+      transcribe_error: cmp.deepgram.error,
       created_at: rows[0].created_at,
+    },
+    compare: {
+      id: compareId,
+      deepgram: cmp.deepgram,
+      whisper: cmp.whisper,
+      judge: cmp.judge,
+      total_elapsed_ms: cmp.total_elapsed_ms,
     },
   });
 }

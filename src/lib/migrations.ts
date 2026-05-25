@@ -1534,6 +1534,66 @@ export const MIGRATIONS: Migration[] = [
       END $$;
     `,
   },
+  {
+    version: 36,
+    name: 'v4_1_4_transcription_comparisons',
+    sql: `
+      -- v4.1.4 — Dual-engine transcription comparison.
+      --
+      -- Every section dictation (or ambient recording) is transcribed by
+      -- BOTH Deepgram (nova-3-medical, cloud) and Whisper large-v3-turbo
+      -- (self-hosted on V's Mac Mini, via Cloudflare tunnel). A third
+      -- qwen2.5:14b call judges the pair on a 1-10 scale and picks the
+      -- winner. The winning transcript goes into the section input; both
+      -- transcripts are persisted for download + later analysis.
+      --
+      -- This drives the model-scoring effort the 25 May Pulse 2.0 meeting
+      -- set up (Ira asked for a structured Deepgram vs alternatives test).
+      -- Real recordings → judge scores accumulate as live data.
+
+      CREATE TABLE IF NOT EXISTS transcription_comparisons (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        encounter_id UUID NOT NULL REFERENCES encounters(id) ON DELETE CASCADE,
+
+        -- Source link — either a section dictation or ambient recording
+        section_dictation_id UUID NULL REFERENCES section_dictations(id) ON DELETE CASCADE,
+        encounter_recording_id UUID NULL REFERENCES encounter_recordings(id) ON DELETE CASCADE,
+
+        -- Audio metadata (denormalized for convenience)
+        audio_blob_url TEXT NOT NULL,
+        audio_duration_seconds INT,
+        audio_mime TEXT,
+        section TEXT,
+
+        -- Deepgram result
+        deepgram_transcript TEXT,
+        deepgram_confidence NUMERIC(4,3),
+        deepgram_latency_ms INT,
+        deepgram_error TEXT,
+
+        -- Whisper result
+        whisper_transcript TEXT,
+        whisper_latency_ms INT,
+        whisper_error TEXT,
+
+        -- qwen2.5:14b judge
+        judge_winner TEXT CHECK (judge_winner IS NULL OR judge_winner IN ('deepgram','whisper','tie')),
+        judge_deepgram_score NUMERIC(3,1),
+        judge_whisper_score NUMERIC(3,1),
+        judge_delta_score NUMERIC(3,1),
+        judge_reasoning TEXT,
+        judge_latency_ms INT,
+        judge_error TEXT,
+
+        total_elapsed_ms INT NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tc_encounter ON transcription_comparisons(encounter_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tc_section_dictation ON transcription_comparisons(section_dictation_id) WHERE section_dictation_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_tc_winner ON transcription_comparisons(judge_winner) WHERE judge_winner IS NOT NULL;
+    `,
+  },
 ];
 
 /**
