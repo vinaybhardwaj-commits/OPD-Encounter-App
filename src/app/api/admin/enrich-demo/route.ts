@@ -1025,7 +1025,7 @@ export async function POST(req: Request) {
   let authed = !!(expected && headerSecret === expected);
   if (!authed) {
     const session = await getCurrentUser();
-    if (session?.id) authed = true;
+    if (session?.email) authed = true;  // any valid session
   }
   if (!authed) {
     return NextResponse.json(
