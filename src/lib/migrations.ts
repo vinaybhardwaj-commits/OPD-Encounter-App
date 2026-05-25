@@ -1388,6 +1388,101 @@ export const MIGRATIONS: Migration[] = [
       END $$;
     `,
   },
+  {
+    version: 34,
+    name: 'v4_1_1_encounter_active_time_clock',
+    sql: `
+      -- v4.1.1 — Pause-aware "doctor-active time" clock at the foundation.
+      --
+      -- The legacy timer in EncounterTopBar/EncounterEditor read
+      -- (NOW() - started_at) and never paused, so a row sitting in
+      -- 'paused_diagnostics' for hours showed inflated minutes (e.g. 561:00).
+      -- We replace it with two durable fields maintained by a trigger so
+      -- the bookkeeping is correct for EVERY status write, current and future,
+      -- regardless of which route or background job issued it.
+      --
+      -- Semantics:
+      --   active_ms_accumulated  = ms of doctor-active time already banked
+      --                            from prior active windows.
+      --   active_since           = timestamp the current active window started;
+      --                            NULL when the encounter is paused,
+      --                            pre-doctor, or completed.
+      --
+      -- Active states = ('active','ready_to_resume'). Pre-doctor states
+      -- ('registered','at_triage','waiting_for_doctor'), 'paused_diagnostics',
+      -- 'cancelled', and 'completed' all leave the clock frozen.
+
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS active_ms_accumulated BIGINT NOT NULL DEFAULT 0;
+      ALTER TABLE encounters
+        ADD COLUMN IF NOT EXISTS active_since TIMESTAMPTZ NULL;
+
+      -- Trigger function: maintain the clock on every INSERT and UPDATE OF status.
+      -- BEFORE trigger so the row mutation is atomic with the status change.
+      CREATE OR REPLACE FUNCTION enc_active_time_maintain()
+      RETURNS TRIGGER AS $fn$
+      DECLARE
+        old_active BOOLEAN;
+        new_active BOOLEAN;
+      BEGIN
+        IF TG_OP = 'INSERT' THEN
+          new_active := NEW.status IN ('active','ready_to_resume');
+          IF new_active THEN
+            NEW.active_since := COALESCE(NEW.active_since, NOW());
+          ELSE
+            NEW.active_since := NULL;
+          END IF;
+          RETURN NEW;
+        END IF;
+
+        -- UPDATE — only act when status actually changed
+        IF NEW.status IS NOT DISTINCT FROM OLD.status THEN
+          RETURN NEW;
+        END IF;
+
+        old_active := OLD.status IN ('active','ready_to_resume');
+        new_active := NEW.status IN ('active','ready_to_resume');
+
+        IF old_active AND NOT new_active THEN
+          -- Leaving an active window: bank elapsed ms, clear active_since.
+          IF OLD.active_since IS NOT NULL THEN
+            NEW.active_ms_accumulated :=
+              COALESCE(OLD.active_ms_accumulated, 0)
+              + (EXTRACT(EPOCH FROM (NOW() - OLD.active_since)) * 1000)::BIGINT;
+          END IF;
+          NEW.active_since := NULL;
+        ELSIF (NOT old_active) AND new_active THEN
+          -- Entering an active window: stamp the start.
+          NEW.active_since := NOW();
+        END IF;
+        -- active <-> active (e.g. active <-> ready_to_resume) and
+        -- non-active <-> non-active transitions: no clock change.
+
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+
+      DROP TRIGGER IF EXISTS encounters_active_time_trg ON encounters;
+      CREATE TRIGGER encounters_active_time_trg
+        BEFORE INSERT OR UPDATE OF status ON encounters
+        FOR EACH ROW
+        EXECUTE FUNCTION enc_active_time_maintain();
+
+      -- One-time backfill for rows that existed before v34.
+      -- We cannot reconstruct historical pause windows, so this is best-effort:
+      --   - currently-active rows ('active' / 'ready_to_resume') get
+      --     active_since = NOW() and 0 accumulated. Their clock starts fresh.
+      --   - all other rows get active_since = NULL and 0 accumulated, so the
+      --     timer reads 0:00 until the encounter next enters an active state.
+      UPDATE encounters
+         SET active_since = CASE
+               WHEN status IN ('active','ready_to_resume') THEN NOW()
+               ELSE NULL
+             END,
+             active_ms_accumulated = 0
+       WHERE active_since IS NULL AND active_ms_accumulated = 0;
+    `,
+  },
 ];
 
 /**

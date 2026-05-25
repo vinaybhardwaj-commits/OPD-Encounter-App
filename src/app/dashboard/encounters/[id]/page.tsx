@@ -32,6 +32,10 @@ export const dynamic = 'force-dynamic';
 type Row = EncounterEditable & {
   patient_id: string;
 
+  // v4.1.1 — pause-aware doctor-active clock (see migration v34 + lib/encounter-timer.ts)
+  active_ms_accumulated: number | string | null;
+  active_since: string | null;
+
   patient_name: string;
   patient_mrn: string;
   patient_age_years: number;
@@ -88,6 +92,8 @@ export default async function EncounterPage({
        e.encounter_number,
        e.status::text AS status,
        e.started_at,
+       e.active_ms_accumulated,
+       e.active_since::text AS active_since,
        e.pending_diagnostic_test,
        e.chief_complaint_chips,
        e.chief_complaint_text,
@@ -238,7 +244,8 @@ export default async function EncounterPage({
         encounterId={row.id}
         encounterNumber={row.encounter_number}
         status={row.status as Parameters<typeof EncounterTopBar>[0]['status']}
-        startedAt={row.started_at ?? null}
+        activeMsAccumulated={Number(row.active_ms_accumulated ?? 0)}
+        activeSince={row.active_since ?? null}
         patientName={row.patient_name}
         patientAge={row.patient_age_years}
         patientSex={row.patient_sex}

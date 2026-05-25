@@ -338,23 +338,13 @@ export function EncounterEditor({
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [timerNow, setTimerNow] = useState(() => Date.now());
   const transcriptRef = useRef<TranscriptViewerHandle | null>(null);
 
-  // Timer that updates each second while encounter is active
-  useEffect(() => {
-    if (readOnly) return;
-    const t = setInterval(() => setTimerNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [readOnly]);
-
-  const elapsed = useMemo(() => {
-    const start = new Date(initial.started_at).getTime();
-    const sec = Math.max(0, Math.floor((timerNow - start) / 1000));
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  }, [timerNow, initial.started_at]);
+  // NOTE — v4.1.1: encounter timer moved to EncounterTopBar exclusively.
+  // It now reads the doctor-active-time clock from encounters.active_since
+  // / active_ms_accumulated (maintained by the encounters_active_time_trg
+  // DB trigger; see lib/encounter-timer.ts). The old body-side ⏱ duplicate
+  // was removed below — top bar is sticky, one timer is enough.
 
   // Build the canonical body for PATCH from current state
   const buildBody = useCallback(() => {
@@ -456,12 +446,9 @@ export function EncounterEditor({
 
   return (
     <div className="space-y-8">
-      {/* Timer + ambient recorder + save indicator */}
+      {/* Ambient recorder + save indicator (v4.1.1 — timer lives in EncounterTopBar) */}
       <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-even-ink-500">
         <div className="flex items-center gap-4">
-          <span className="font-mono text-sm tabular-nums text-even-navy">
-            ⏱ {readOnly ? '—' : elapsed}
-          </span>
           {!readOnly && (
             <AmbientRecorder
               encounterId={initial.id}

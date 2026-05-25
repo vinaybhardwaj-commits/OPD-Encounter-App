@@ -1,26 +1,34 @@
 'use client';
 
 /**
- * <EncounterTopBar /> — v4.0.1
+ * <EncounterTopBar /> — v4.1.1
  *
- * Replaces the original page header (Back-to-queue + VoiceQueryFab +
- * encounter number + status). Per the v4 PRD §5.1:
+ * Top of the encounter capture page:
  *
- *   ← Queue   Patient Name · 37M · ENC-2026-014   ⏱ 03:06  🎙  ✨  ⋯
+ *   ← Queue   ● Patient Name · 37M · ENC-2026-014   ⏱ 0:42  🎙  …
  *
- * - Sentence-case "Queue" link, no uppercase tracking-wide
- * - Patient identity is the bold center; status renders as a tiny
- *   colored dot before the name (gray / blue / amber / ink)
- * - Right side: timer (computed client-side), voice query (existing
- *   VoiceQueryFab), Ask side-panel toggle, more menu
+ * Timer behaviour (v4.1.1 — see migration v34 + lib/encounter-timer.ts):
  *
- * The "more menu" (⋯) is a placeholder for v4.0.x — it'll surface
- * Diagnostics workspace, Imaging, Flag handoff, History panel, etc.
- * in later sprints. For now it's a stub that opens nothing.
+ *   The timer reads the doctor-active-time clock maintained by the
+ *   encounters_active_time_trg DB trigger. It runs (ticking) only when
+ *   the encounter is in an active state (active / ready_to_resume); it
+ *   freezes during paused_diagnostics, cancelled, completed, and the
+ *   pre-doctor states. Hours roll over: a four-hour encounter shows
+ *   "4:00:00", not "240:00".
+ *
+ *   Earlier versions (v4.0.1 and before) computed (NOW() - started_at)
+ *   on the client, which (a) never paused, (b) never rolled minutes
+ *   into hours, and (c) was duplicated in EncounterEditor's body —
+ *   producing the 561:00 reading V hit on the demo encounter.
  */
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { VoiceQueryFab } from '../VoiceQueryFab';
+import {
+  computeActiveSeconds,
+  formatActiveTime,
+  isTimerLive,
+} from '@/lib/encounter-timer';
 
 type EncounterStatus =
   | 'registered'
@@ -43,21 +51,12 @@ const STATUS_TONE: Record<EncounterStatus, StatusTone> = {
   completed: { dot: 'bg-even-ink-200', label: 'completed' },
 };
 
-function formatElapsed(startedAtIso: string | null): string {
-  if (!startedAtIso) return '—';
-  const start = new Date(startedAtIso).getTime();
-  if (Number.isNaN(start)) return '—';
-  const elapsedSec = Math.max(0, Math.floor((Date.now() - start) / 1000));
-  const m = Math.floor(elapsedSec / 60);
-  const s = elapsedSec % 60;
-  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-}
-
 export function EncounterTopBar({
   encounterId,
   encounterNumber,
   status,
-  startedAt,
+  activeMsAccumulated,
+  activeSince,
   patientName,
   patientAge,
   patientSex,
@@ -65,22 +64,55 @@ export function EncounterTopBar({
   encounterId: string;
   encounterNumber: string;
   status: EncounterStatus;
-  startedAt: string | null;
+  /** encounters.active_ms_accumulated — banked active time so far */
+  activeMsAccumulated: number;
+  /** encounters.active_since (ISO) — null when the clock is frozen */
+  activeSince: string | null;
   patientName: string;
   patientAge: number;
   patientSex: string;
 }) {
-  const [elapsed, setElapsed] = useState(() => formatElapsed(startedAt));
+  const live = isTimerLive(activeSince, status);
 
+  const [display, setDisplay] = useState(() =>
+    formatActiveTime(computeActiveSeconds(activeMsAccumulated, activeSince)),
+  );
+
+  // Tick once per second only while the clock is live. When frozen we
+  // render the value computed at mount and skip the interval entirely.
   useEffect(() => {
-    if (status === 'completed') return;
-    const id = setInterval(() => setElapsed(formatElapsed(startedAt)), 1000);
+    if (!live) {
+      setDisplay(
+        formatActiveTime(computeActiveSeconds(activeMsAccumulated, activeSince)),
+      );
+      return;
+    }
+    setDisplay(
+      formatActiveTime(computeActiveSeconds(activeMsAccumulated, activeSince)),
+    );
+    const id = setInterval(() => {
+      setDisplay(
+        formatActiveTime(computeActiveSeconds(activeMsAccumulated, activeSince)),
+      );
+    }, 1000);
     return () => clearInterval(id);
-  }, [startedAt, status]);
+  }, [live, activeMsAccumulated, activeSince]);
 
   const tone = STATUS_TONE[status];
-  const showTimer = status !== 'completed' && startedAt;
+  // We show the timer for any non-completed encounter. Frozen states
+  // display the banked value statically (e.g. "0:00" for a fresh demo
+  // row that's paused, or "12:07" for an encounter currently paused
+  // mid-flow). Completed encounters hide the timer entirely.
+  const showTimer = status !== 'completed';
   const showVoice = status !== 'completed';
+
+  const timerTitle = live
+    ? 'Doctor-active time (ticking)'
+    : status === 'paused_diagnostics'
+      ? 'Paused for diagnostics — clock frozen'
+      : status === 'completed'
+        ? 'Encounter completed'
+        : 'Doctor-active time (frozen)';
 
   return (
     <header className="border-b border-even-ink-100 bg-white">
@@ -115,17 +147,13 @@ export function EncounterTopBar({
         <div className="flex shrink-0 items-center gap-3 text-xs text-even-ink-500">
           {showTimer && (
             <span
-              className="font-mono tabular-nums text-even-navy"
-              title="Elapsed since encounter started"
+              className={`font-mono tabular-nums ${live ? 'text-even-navy' : 'text-even-ink-400'}`}
+              title={timerTitle}
             >
-              ⏱ {elapsed}
+              ⏱ {display}
             </span>
           )}
           {showVoice && <VoiceQueryFab encounterId={encounterId} />}
-          {/* The ✨ Ask toggle + ⋯ more menu are placeholders for v4.0.8/4.0.9.
-              For v4.0.1 the side panel is already always-rendered, and the
-              imaging/handoff/workspace actions remain in EncounterEditor's
-              existing action bar. */}
         </div>
       </div>
     </header>
