@@ -1483,6 +1483,57 @@ export const MIGRATIONS: Migration[] = [
        WHERE active_since IS NULL AND active_ms_accumulated = 0;
     `,
   },
+  {
+    version: 35,
+    name: 'v4_1_2_assert_db_timezone_ist',
+    sql: `
+      -- v4.1.2 — Assert the database default TIMEZONE is Asia/Kolkata.
+      --
+      -- The hospital runs in IST. We can't ALTER DATABASE inside a
+      -- transaction (and migrations all run inside one), so the
+      -- timezone is set OUT-OF-BAND via a one-time:
+      --   ALTER DATABASE neondb SET TIMEZONE TO 'Asia/Kolkata';
+      -- run from the Neon SQL editor.
+      --
+      -- This migration just verifies the catalog still reflects that
+      -- setting. If it doesn't (e.g. DB restored from backup, replica
+      -- promoted, new env deployed), the migration loudly RAISE
+      -- WARNINGs so the operator notices before users do. Production
+      -- impact of a missed TZ: every morning dashboards look empty
+      -- because the cron stamps encounter_date with UTC-yesterday's
+      -- date relative to IST users.
+      DO $$
+      DECLARE
+        cfg TEXT[];
+        has_ist BOOLEAN := FALSE;
+      BEGIN
+        SELECT setconfig INTO cfg
+          FROM pg_db_role_setting s
+          JOIN pg_database d ON d.oid = s.setdatabase
+         WHERE d.datname = current_database() AND s.setrole = 0;
+
+        IF cfg IS NOT NULL THEN
+          has_ist := (
+            SELECT bool_or(c LIKE 'TimeZone=Asia/Kolkata%')
+              FROM unnest(cfg) AS c
+          );
+        END IF;
+
+        IF NOT COALESCE(has_ist, FALSE) THEN
+          RAISE WARNING $msg$
+            DB-default TIMEZONE is NOT set to Asia/Kolkata.
+            Run, OUT OF TRANSACTION, from the Neon SQL editor:
+              ALTER DATABASE neondb SET TIMEZONE TO 'Asia/Kolkata';
+            Without this, every IST morning dashboards look empty
+            because encounter_date stamps drift across the UTC midnight
+            boundary while IST users perceive the same day.
+          $msg$;
+        ELSE
+          RAISE NOTICE 'DB TIMEZONE asserted: Asia/Kolkata';
+        END IF;
+      END $$;
+    `,
+  },
 ];
 
 /**
