@@ -37,7 +37,7 @@ import { splitSqlStatements } from '@/lib/migrations';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const CHUNK_01 = `
 -- CHUNK 1: comorbidities + allergies
@@ -1068,7 +1068,6 @@ export async function POST(req: Request) {
         error: String(e instanceof Error ? e.message : e).slice(0, 800),
         ms: Date.now() - chunkStart,
       });
-      client.release();
       return NextResponse.json(
         {
           ok: false,
