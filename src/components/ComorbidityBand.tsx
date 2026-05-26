@@ -22,6 +22,8 @@ import { TierBadge } from './TierBadge';
 import { ComorbidityEditModal } from './ComorbidityEditModal';
 import type { TierBreakdown } from '@/lib/comorbidity-tier';
 import { KbEvidenceReveal } from './KbEvidenceReveal';
+import TracePanel, { type TraceEvent } from '@/components/llm-trace/TracePanel';
+import { consumeNdjson } from '@/lib/llm-trace/ndjson-client';
 
 type ApiComorbidity = {
   id: string;
@@ -65,6 +67,11 @@ export function ComorbidityBand({
   const [suggest, setSuggest] = useState<DemographicsSuggestPayload | null>(null);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [acceptingCode, setAcceptingCode] = useState<string | null>(null);
+  // v6.0 Phase 3 — TracePanel state for the demographics-suggest fetch.
+  // Populated only on NDJSON cache-miss.
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [traceTotalMs, setTraceTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
   const dismissKey = useMemo(
     () => (encounterId ? `comorbidity-demo-suggest-dismissed:${encounterId}` : null),
     [encounterId],
@@ -112,12 +119,50 @@ export function ComorbidityBand({
 
     let cancelled = false;
     setSuggestLoading(true);
+    // Reset trace state for every fire.
+    setTraceEvents([]);
+    setTraceTotalMs(undefined);
+    setTraceId(null);
     (async () => {
       try {
-        const res = await fetch(`/api/encounters/${encounterId}/comorbidities/suggest-from-context`);
-        const json = await res.json();
+        const res = await fetch(`/api/encounters/${encounterId}/comorbidities/suggest-from-context`, {
+          headers: { Accept: 'application/x-ndjson' },
+        });
         if (cancelled) return;
-        if (json.ok && json.payload) setSuggest(json.payload as DemographicsSuggestPayload);
+        if (!res.ok) return;
+        const tid = res.headers.get('X-Trace-Id');
+        if (tid) setTraceId(tid);
+        const ct = res.headers.get('content-type') ?? '';
+
+        if (ct.includes('application/x-ndjson')) {
+          // Streaming path — qwen is firing.
+          type ResultBody = { ok?: boolean; payload?: DemographicsSuggestPayload };
+          const resultRef: { current: ResultBody | null } = { current: null };
+          await consumeNdjson(res, (ev) => {
+            if (cancelled) return;
+            if (ev.type === 'progress') {
+              setTraceEvents((prev) => {
+                const next = prev.map((p, i) => (i === prev.length - 1 && !p.done ? { ...p, done: true } : p));
+                return [...next, { stage: ev.stage, msg: ev.msg, ms: ev.ms, done: false, ts: Date.now() }];
+              });
+            } else if (ev.type === 'result') {
+              resultRef.current = ev.data as ResultBody;
+            } else if (ev.type === 'done') {
+              setTraceTotalMs(ev.ms);
+              setTraceEvents((prev) => [...prev, { stage: 'done', msg: '', ms: ev.ms, done: true, ts: Date.now() }]);
+            } else if (ev.type === 'error') {
+              setTraceEvents((prev) => [...prev, { stage: 'done', msg: ev.message, done: true, error: true, ts: Date.now() }]);
+            }
+          });
+          if (cancelled) return;
+          const body = resultRef.current;
+          if (body && body.ok && body.payload) setSuggest(body.payload);
+        } else {
+          // Plain JSON cache-hit path.
+          const json = await res.json();
+          if (cancelled) return;
+          if (json.ok && json.payload) setSuggest(json.payload as DemographicsSuggestPayload);
+        }
       } catch {
         /* soft-fail */
       } finally {
@@ -245,7 +290,17 @@ export function ComorbidityBand({
                     Dismiss all
                   </button>
                 </div>
-                {suggestLoading ? (
+                {(traceEvents.length > 0 || suggestLoading) && (
+                  <div className="mb-2">
+                    <TracePanel
+                      events={traceEvents}
+                      totalMs={traceTotalMs}
+                      traceId={traceId}
+                      surface="comorbidity-context"
+                    />
+                  </div>
+                )}
+                {suggestLoading && traceEvents.length === 0 ? (
                   <div className="text-[11px] italic text-violet-500">Thinking…</div>
                 ) : okSuggest && (
                   <div className="flex flex-wrap gap-1.5">

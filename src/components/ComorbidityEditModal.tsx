@@ -16,6 +16,8 @@ import { TierOverridePopover, type TierOverrideValue } from './TierOverridePopov
 import { KbEvidenceReveal } from './KbEvidenceReveal';
 import { ComorbiditySearch, type CatalogEntry } from './ComorbiditySearch';
 import type { TierBreakdown } from '@/lib/comorbidity-tier';
+import TracePanel, { type TraceEvent } from '@/components/llm-trace/TracePanel';
+import { consumeNdjson } from '@/lib/llm-trace/ndjson-client';
 
 type ApiComorbidity = {
   id: string;
@@ -89,6 +91,10 @@ export function ComorbidityEditModal({
   const [stateLoading, setStateLoading] = useState(false);
   /** Confirmed/edited state per comorbidity_id — overrides server value optimistically until save. */
   const [stateEdits, setStateEdits] = useState<Map<string, { control_state?: 'well'|'partial'|'uncontrolled'|null; severity_state?: 'mild'|'moderate'|'severe'|null; from_qwen: boolean }>>(new Map());
+  // v6.0 Phase 3 — TracePanel state for comorbidity-states/suggest.
+  const [stateTraceEvents, setStateTraceEvents] = useState<TraceEvent[]>([]);
+  const [stateTraceTotalMs, setStateTraceTotalMs] = useState<number | undefined>(undefined);
+  const [stateTraceId, setStateTraceId] = useState<string | null>(null);
 
   // v3.9.2 — Suggest from history (Qwen reads past 5-10 encounters)
   type HistorySuggestion = { code: string; label: string; rationale: string; confidence: number };
@@ -97,19 +103,56 @@ export function ComorbidityEditModal({
   const [historyErr, setHistoryErr] = useState<string | null>(null);
   const [historyLatency, setHistoryLatency] = useState<number | null>(null);
   const [historyScanned, setHistoryScanned] = useState<number | null>(null);
+  // v6.0 Phase 3 — TracePanel state for suggest-from-history.
+  const [historyTraceEvents, setHistoryTraceEvents] = useState<TraceEvent[]>([]);
+  const [historyTraceTotalMs, setHistoryTraceTotalMs] = useState<number | undefined>(undefined);
+  const [historyTraceId, setHistoryTraceId] = useState<string | null>(null);
 
   const fetchHistorySuggestions = async () => {
     setHistoryLoading(true); setHistoryErr(null);
+    // Reset trace state for every fire.
+    setHistoryTraceEvents([]);
+    setHistoryTraceTotalMs(undefined);
+    setHistoryTraceId(null);
     try {
-      const res = await fetch(`/api/patients/${patientId}/comorbidities/suggest-from-history`, { method: 'POST' });
-      const json = await res.json();
-      if (json.ok && Array.isArray(json.suggestions)) {
+      const res = await fetch(`/api/patients/${patientId}/comorbidities/suggest-from-history`, {
+        method: 'POST',
+        headers: { Accept: 'application/x-ndjson' },
+      });
+      const tid = res.headers.get('X-Trace-Id');
+      if (tid) setHistoryTraceId(tid);
+      // Route streams NDJSON (no cache).
+      type HistoryBody = {
+        ok?: boolean;
+        suggestions?: HistorySuggestion[];
+        latency_ms?: number;
+        encounters_scanned?: number;
+        error?: string;
+      };
+      const resultRef: { current: HistoryBody | null } = { current: null };
+      await consumeNdjson(res, (ev) => {
+        if (ev.type === 'progress') {
+          setHistoryTraceEvents((prev) => {
+            const next = prev.map((p, i) => (i === prev.length - 1 && !p.done ? { ...p, done: true } : p));
+            return [...next, { stage: ev.stage, msg: ev.msg, ms: ev.ms, done: false, ts: Date.now() }];
+          });
+        } else if (ev.type === 'result') {
+          resultRef.current = ev.data as HistoryBody;
+        } else if (ev.type === 'done') {
+          setHistoryTraceTotalMs(ev.ms);
+          setHistoryTraceEvents((prev) => [...prev, { stage: 'done', msg: '', ms: ev.ms, done: true, ts: Date.now() }]);
+        } else if (ev.type === 'error') {
+          setHistoryTraceEvents((prev) => [...prev, { stage: 'done', msg: ev.message, done: true, error: true, ts: Date.now() }]);
+        }
+      });
+      const json = resultRef.current;
+      if (json && json.ok && Array.isArray(json.suggestions)) {
         setHistorySuggestions(json.suggestions);
         setHistoryLatency(json.latency_ms ?? null);
         setHistoryScanned(json.encounters_scanned ?? null);
         if (json.suggestions.length === 0 && json.error) setHistoryErr(json.error);
       } else {
-        setHistoryErr(json.error ?? 'No suggestions');
+        setHistoryErr(json?.error ?? 'No suggestions');
       }
     } catch (e) {
       setHistoryErr(e instanceof Error ? e.message : String(e));
@@ -139,18 +182,61 @@ export function ComorbidityEditModal({
     return () => { cancel = true; };
   }, [patientId]);
 
-  // v3.9.5 — fetch Qwen state suggestions when encounterId is supplied
+  // v3.9.5 — fetch Qwen state suggestions when encounterId is supplied.
+  // v6.0 Phase 3 — consumes NDJSON when the route's cache misses; falls
+  // back to plain JSON on cache hit. Renders <TracePanel surface=
+  // 'comorbidity-states'> while qwen is firing.
   useEffect(() => {
     if (!encounterId) return;
     let cancel = false;
     setStateLoading(true);
+    // Reset trace state for every fire.
+    setStateTraceEvents([]);
+    setStateTraceTotalMs(undefined);
+    setStateTraceId(null);
     (async () => {
       try {
-        const res = await fetch(`/api/encounters/${encounterId}/comorbidity-states/suggest`);
-        const json = await res.json();
+        const res = await fetch(`/api/encounters/${encounterId}/comorbidity-states/suggest`, {
+          headers: { Accept: 'application/x-ndjson' },
+        });
         if (cancel) return;
-        if (json.ok && json.payload?.status === 'ok' && Array.isArray(json.payload.findings)) {
-          const findings = json.payload.findings as StateSuggestion[];
+        if (!res.ok) return;
+        const tid = res.headers.get('X-Trace-Id');
+        if (tid) setStateTraceId(tid);
+        const ct = res.headers.get('content-type') ?? '';
+
+        type StatesBody = {
+          ok?: boolean;
+          payload?: { status?: 'ok' | 'failed'; findings?: StateSuggestion[] };
+        };
+        let body: StatesBody | null = null;
+
+        if (ct.includes('application/x-ndjson')) {
+          const resultRef: { current: StatesBody | null } = { current: null };
+          await consumeNdjson(res, (ev) => {
+            if (cancel) return;
+            if (ev.type === 'progress') {
+              setStateTraceEvents((prev) => {
+                const next = prev.map((p, i) => (i === prev.length - 1 && !p.done ? { ...p, done: true } : p));
+                return [...next, { stage: ev.stage, msg: ev.msg, ms: ev.ms, done: false, ts: Date.now() }];
+              });
+            } else if (ev.type === 'result') {
+              resultRef.current = ev.data as StatesBody;
+            } else if (ev.type === 'done') {
+              setStateTraceTotalMs(ev.ms);
+              setStateTraceEvents((prev) => [...prev, { stage: 'done', msg: '', ms: ev.ms, done: true, ts: Date.now() }]);
+            } else if (ev.type === 'error') {
+              setStateTraceEvents((prev) => [...prev, { stage: 'done', msg: ev.message, done: true, error: true, ts: Date.now() }]);
+            }
+          });
+          if (cancel) return;
+          body = resultRef.current;
+        } else {
+          body = (await res.json()) as StatesBody;
+        }
+
+        if (body && body.ok && body.payload?.status === 'ok' && Array.isArray(body.payload.findings)) {
+          const findings = body.payload.findings;
           setStateSuggestions(findings);
           // Pre-fill stateEdits for chips that currently have no value
           setStateEdits((cur) => {
@@ -363,6 +449,16 @@ export function ComorbidityEditModal({
         <div className="grid flex-1 grid-cols-3 gap-6 px-6 py-6">
           {/* Left 2/3 */}
           <div className="col-span-2 space-y-5">
+            {(stateTraceEvents.length > 0 || (stateLoading && encounterId)) && (
+              <div>
+                <TracePanel
+                  events={stateTraceEvents}
+                  totalMs={stateTraceTotalMs}
+                  traceId={stateTraceId}
+                  surface="comorbidity-states"
+                />
+              </div>
+            )}
             <section>
               <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-even-ink-500">Add</div>
               <ComorbiditySearch
@@ -565,9 +661,14 @@ export function ComorbidityEditModal({
             </button>
           </div>
 
-          {historyLoading && (
-            <div className="mt-2 text-[11px] italic text-violet-700">
-              Scanning past completed encounters…
+          {(historyTraceEvents.length > 0 || historyLoading) && (
+            <div className="mt-2">
+              <TracePanel
+                events={historyTraceEvents}
+                totalMs={historyTraceTotalMs}
+                traceId={historyTraceId}
+                surface="comorbidity-history"
+              />
             </div>
           )}
 

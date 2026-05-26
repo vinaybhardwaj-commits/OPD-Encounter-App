@@ -7,8 +7,14 @@
  *
  * Renders above the Icd10Typeahead. Each chip clickable to add as
  * an ICD-10 code. Failure-silent.
+ *
+ * v6.0 Phase 3 — consumes NDJSON when the server-side cache misses
+ * and renders <TracePanel surface="icd10-suggest" /> live. The cache-hit
+ * path stays a plain JSON read (no panel needed, <100ms response).
  */
 import { useEffect, useState } from 'react';
+import TracePanel, { type TraceEvent } from '@/components/llm-trace/TracePanel';
+import { consumeNdjson } from '@/lib/llm-trace/ndjson-client';
 
 type Suggestion = { code: string; label: string; rationale: string; confidence: number };
 type Payload =
@@ -28,15 +34,59 @@ export function Icd10SuggestedChips({
   const [loading, setLoading] = useState(true);
   const [cached, setCached] = useState(false);
 
+  // v6.0 Phase 3 — TracePanel state. Populated only on NDJSON cache-miss.
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [traceTotalMs, setTraceTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
+
   useEffect(() => {
     let cancel = false;
     (async () => {
       try {
-        const res = await fetch(`/api/encounters/${encounterId}/icd10-suggest`);
-        const json = await res.json();
-        if (!cancel && json.ok) {
-          setPayload(json.payload);
-          setCached(json.cached);
+        const res = await fetch(`/api/encounters/${encounterId}/icd10-suggest`, {
+          headers: { Accept: 'application/x-ndjson' },
+        });
+        if (!res.ok) {
+          if (!cancel) setLoading(false);
+          return;
+        }
+        const tid = res.headers.get('X-Trace-Id');
+        if (tid && !cancel) setTraceId(tid);
+        const ct = res.headers.get('content-type') ?? '';
+
+        if (ct.includes('application/x-ndjson')) {
+          // Streaming path — qwen is firing. Render the trace panel.
+          type ResultBody = { ok?: boolean; cached?: boolean; payload?: Payload };
+          const resultRef: { current: ResultBody | null } = { current: null };
+          await consumeNdjson(res, (ev) => {
+            if (cancel) return;
+            if (ev.type === 'progress') {
+              setTraceEvents((prev) => {
+                const next = prev.map((p, i) => (i === prev.length - 1 && !p.done ? { ...p, done: true } : p));
+                return [...next, { stage: ev.stage, msg: ev.msg, ms: ev.ms, done: false, ts: Date.now() }];
+              });
+            } else if (ev.type === 'result') {
+              resultRef.current = ev.data as ResultBody;
+            } else if (ev.type === 'done') {
+              setTraceTotalMs(ev.ms);
+              setTraceEvents((prev) => [...prev, { stage: 'done', msg: '', ms: ev.ms, done: true, ts: Date.now() }]);
+            } else if (ev.type === 'error') {
+              setTraceEvents((prev) => [...prev, { stage: 'done', msg: ev.message, done: true, error: true, ts: Date.now() }]);
+            }
+          });
+          if (cancel) return;
+          const body = resultRef.current;
+          if (body && body.ok && body.payload) {
+            setPayload(body.payload);
+            setCached(Boolean(body.cached));
+          }
+        } else {
+          // Plain JSON cache-hit path.
+          const json = await res.json();
+          if (!cancel && json.ok) {
+            setPayload(json.payload);
+            setCached(json.cached);
+          }
         }
       } finally {
         if (!cancel) setLoading(false);
@@ -46,6 +96,21 @@ export function Icd10SuggestedChips({
   }, [encounterId]);
 
   if (loading) {
+    // Show the TracePanel only if we've started receiving NDJSON events
+    // (cache-miss path). Otherwise show the legacy italic line — the
+    // cache hit lands in <100ms and the loader disappears.
+    if (traceEvents.length > 0) {
+      return (
+        <div>
+          <TracePanel
+            events={traceEvents}
+            totalMs={traceTotalMs}
+            traceId={traceId}
+            surface="icd10-suggest"
+          />
+        </div>
+      );
+    }
     return (
       <p className="text-[11px] italic text-violet-700">
         Reading the encounter context for ICD-10 suggestions…

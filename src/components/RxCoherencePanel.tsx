@@ -20,6 +20,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PrescriptionLine } from './DrugRow';
+import TracePanel, { type TraceEvent } from '@/components/llm-trace/TracePanel';
+import { consumeNdjson } from '@/lib/llm-trace/ndjson-client';
 
 export type CoherenceWarning = {
   rx_index: number;
@@ -51,6 +53,10 @@ export type CoherenceState = {
   addComorbidity: (w: CoherenceWarning) => Promise<void>;
   /** Mark a warning addressed by explicit override + optional reason. */
   overrideWarning: (w: CoherenceWarning, reason: string) => void;
+  // v6.0 Phase 3 — trace panel state (qwen-fallback path only)
+  traceEvents: TraceEvent[];
+  traceTotalMs: number | undefined;
+  traceId: string | null;
 };
 
 /**
@@ -80,20 +86,60 @@ export function useRxCoherence({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightRef = useRef(false);
 
+  // v6.0 Phase 3 — TracePanel state. Populated only when the server-side
+  // static-pass classifier misses and qwen-fallback streams NDJSON.
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [traceTotalMs, setTraceTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
+
   const fetchWarnings = useCallback(async () => {
     if (readOnly) return;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     setLoading(true);
+    // Reset trace state for every fire.
+    setTraceEvents([]);
+    setTraceTotalMs(undefined);
+    setTraceId(null);
     try {
       const res = await fetch(`/api/encounters/${encounterId}/rx-coherence`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', Accept: 'application/x-ndjson' },
         body: JSON.stringify({ lines }),
       });
-      const json = await res.json();
-      if (json.ok && Array.isArray(json.warnings)) {
-        setWarnings(json.warnings);
+      const tid = res.headers.get('X-Trace-Id');
+      if (tid) setTraceId(tid);
+      const ct = res.headers.get('content-type') ?? '';
+
+      if (ct.includes('application/x-ndjson')) {
+        // qwen-fallback streaming path.
+        type ResultBody = { ok?: boolean; warnings?: CoherenceWarning[] };
+        const resultRef: { current: ResultBody | null } = { current: null };
+        await consumeNdjson(res, (ev) => {
+          if (ev.type === 'progress') {
+            setTraceEvents((prev) => {
+              const next = prev.map((p, i) => (i === prev.length - 1 && !p.done ? { ...p, done: true } : p));
+              return [...next, { stage: ev.stage, msg: ev.msg, ms: ev.ms, done: false, ts: Date.now() }];
+            });
+          } else if (ev.type === 'result') {
+            resultRef.current = ev.data as ResultBody;
+          } else if (ev.type === 'done') {
+            setTraceTotalMs(ev.ms);
+            setTraceEvents((prev) => [...prev, { stage: 'done', msg: '', ms: ev.ms, done: true, ts: Date.now() }]);
+          } else if (ev.type === 'error') {
+            setTraceEvents((prev) => [...prev, { stage: 'done', msg: ev.message, done: true, error: true, ts: Date.now() }]);
+          }
+        });
+        const body = resultRef.current;
+        if (body && body.ok && Array.isArray(body.warnings)) {
+          setWarnings(body.warnings);
+        }
+      } else {
+        // Static-pass JSON path (most calls).
+        const json = await res.json();
+        if (json.ok && Array.isArray(json.warnings)) {
+          setWarnings(json.warnings);
+        }
       }
     } catch {
       /* soft-fail */
@@ -166,7 +212,7 @@ export function useRxCoherence({
     );
   }, [overrides, onOverridesChange]);
 
-  return { warnings, overrides, loading, refresh: fetchWarnings, addComorbidity, overrideWarning };
+  return { warnings, overrides, loading, refresh: fetchWarnings, addComorbidity, overrideWarning, traceEvents, traceTotalMs, traceId };
 }
 
 /**
@@ -205,7 +251,7 @@ export function RxCoherencePanel({
   }, [warnings]);
 
   if (mode === 'inline') {
-    if (visibleWarnings.length === 0 && !loading) return null;
+    if (visibleWarnings.length === 0 && !loading && state.traceEvents.length === 0) return null;
     return (
       <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50/70 p-3">
         <div className="mb-2 flex items-baseline justify-between">
@@ -214,6 +260,16 @@ export function RxCoherencePanel({
           </div>
           {loading && <span className="text-[10px] italic text-amber-600">checking…</span>}
         </div>
+        {state.traceEvents.length > 0 && (
+          <div className="mb-2">
+            <TracePanel
+              events={state.traceEvents}
+              totalMs={state.traceTotalMs}
+              traceId={state.traceId}
+              surface="rx-coherence"
+            />
+          </div>
+        )}
         <ul className="space-y-1.5">
           {visibleWarnings.map((w) => (
             <CoherenceRow
