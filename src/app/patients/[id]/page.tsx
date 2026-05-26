@@ -19,6 +19,7 @@ import { notFound, redirect } from 'next/navigation';
 import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { actionRecompute, actionSaveOverride } from './actions';
+import AiActivityList from '@/components/llm-trace/AiActivityList';
 
 export const dynamic = 'force-dynamic';
 // Recompute server action calls Qwen (~5-47s warm/cold). 300s is the
@@ -276,6 +277,9 @@ export default async function PatientPage({
 
         {/* 6. Encounter timeline */}
         <EncounterTimelineSection encounters={encounters} />
+
+        {/* 7. AI activity (Phase 4 decision Q7) */}
+        <AiActivityList patientId={patient.id} />
       </section>
     </main>
   );

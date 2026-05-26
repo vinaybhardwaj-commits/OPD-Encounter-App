@@ -27,6 +27,8 @@ import { createHash } from 'node:crypto';
 import { pool } from '@/lib/db';
 import { CC_CHIPS } from '@/lib/cc-chips';
 import { qwenJson, QwenError, QWEN_MODEL } from '@/lib/qwen';
+import { openTrace } from '@/lib/llm-trace/log';
+import { withHeartbeat } from '@/lib/llm-trace/heartbeat';
 
 // -----------------------------------------------------------------------------
 // Input gathering
@@ -376,10 +378,23 @@ export async function recomputePatientSummary(args: {
 }): Promise<RecomputeOutcome> {
   const { patientId, doctorId } = args;
 
+  // v6.0 Phase 4 — open a trace for this background fire. The
+  // BackgroundTraceToaster polling on the patient page picks this up
+  // while it's in_progress; the AI activity tab lists it once done.
+  const trace = await openTrace({
+    surface: 'patient-summary',
+    patient_id: patientId,
+    doctor_email: null,
+    request_input: { patientId, doctorId },
+  });
+
   const bundle = await buildSummaryInput(patientId);
   if (!bundle) {
+    await trace.finalise({ status: 'errored', error_message: 'patient_not_found' });
     return { ok: false, reason: 'patient_not_found' };
   }
+
+  trace.event('expanding', `Loaded ${bundle.encounters.length} encounter${bundle.encounters.length === 1 ? '' : 's'} for window ${bundle.window_start} → ${bundle.window_end}`);
 
   // Mark as computing for observability.
   await pool.query(
@@ -394,8 +409,17 @@ export async function recomputePatientSummary(args: {
 
   let qwenLatency: number | null = null;
   try {
-    const result = await qwenJson<unknown>(SUMMARY_SYSTEM_PROMPT, userMessage);
+    trace.event('generating', 'Drafting summary with the reasoning model');
+    const result = await withHeartbeat(
+      (ev) => {
+        if (ev.type === 'progress') trace.event(ev.stage, ev.msg, ev.ms);
+      },
+      'generating',
+      'Drafting patient summary',
+      async () => qwenJson<unknown>(SUMMARY_SYSTEM_PROMPT, userMessage),
+    );
     qwenLatency = result.latency_ms;
+    trace.event('parsing', 'Validating summary schema', result.latency_ms);
 
     const v = validateSummary(result.json);
     if (!v.ok) {

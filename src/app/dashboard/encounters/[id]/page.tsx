@@ -16,6 +16,8 @@ import { EncounterTopBar } from '@/components/encounter/EncounterTopBar';
 import { PatientContextStrip } from '@/components/encounter/PatientContextStrip';
 import { EncounterLabResults } from '@/components/EncounterLabResults';
 import { VoiceQueryFab } from '@/components/VoiceQueryFab';
+import AiActivityList from '@/components/llm-trace/AiActivityList';
+import BackgroundTraceToaster from '@/components/llm-trace/BackgroundTraceToaster';
 import { HandoffBanner } from '@/components/HandoffBanner';
 import type { PrescriptionLine } from '@/components/DrugRow';
 import {
@@ -360,7 +362,11 @@ export default async function EncounterPage({
             />
           </div>
         </div>
+        <div className="mx-auto mt-6 max-w-7xl">
+          <AiActivityList encounterId={row.id} />
+        </div>
       </section>
+      <BackgroundTraceToaster encounterId={row.id} />
     </main>
   );
 }
