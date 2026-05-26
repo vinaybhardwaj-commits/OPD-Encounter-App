@@ -22,6 +22,7 @@ import { useEffect, useState } from 'react';
 import { DiagnosticSearch, type CatalogRow } from './DiagnosticSearch';
 import { BundlePickerChips } from './BundlePickerChips';
 import { SuggestedOrderChips } from './SuggestedOrderChips';
+import { CollapsedSuggestions } from './CollapsedSuggestions';
 
 type Source =
   | 'manual'
@@ -83,7 +84,7 @@ export function DiagnosticsQuickAddStrip({
   onConfirmed?: (orderIds: string[]) => void;
   readOnly?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  // v5.0.4 — `expanded` state removed; search is always visible.
   const [cart, setCart] = useState<CartItem[]>([]);
   const [pendingCancel, setPendingCancel] = useState<Map<string, string>>(new Map()); // existing_id → reason
   const [confirming, setConfirming] = useState(false);
@@ -226,78 +227,71 @@ export function DiagnosticsQuickAddStrip({
           <div className="text-[11px] italic text-even-ink-400">Loading existing orders…</div>
         )}
 
-        {!loading && !expanded && cart.length === 0 && pendingCancel.size === 0 && !confirmedMessage && (
-          <>
-            <div className="rounded-md border border-dashed border-even-ink-200 bg-even-ink-50/40 px-3 py-3 text-center text-xs text-even-ink-400">
-              No tests yet. Add the first one to start.
-            </div>
-            <button
-              type="button"
-              onClick={() => setExpanded(true)}
-              className="rounded-md border border-dashed border-even-blue-300 px-3 py-1.5 text-xs font-medium text-even-blue-700 hover:bg-even-blue-50"
-            >
-              + Add a test
-            </button>
-          </>
-        )}
+        {/* v5.0.4 — Always-visible primary CTA: search.
+            Bundle picker + AI suggestion chips are tucked behind a
+            secondary "Show suggestions" link via CollapsedSuggestions —
+            inverse of the broken v4.1.6 wrap which collapsed the entire
+            section behind a single link and stranded the doctor.
 
-        {expanded && (
-          <div className="rounded-md border border-even-blue-100 bg-even-blue-50/30 p-3 space-y-3">
-            <SuggestedOrderChips
-              encounterId={encounterId}
-              alreadyInCart={cartCodes}
-              onAdd={(row) => {
-                setCart((cur) => {
-                  if (cur.some((c) => c.service_code === row.service_code)) return cur;
-                  return [
-                    ...cur,
-                    {
-                      service_code: row.service_code,
-                      display_name: row.display_name,
-                      sub_department: row.sub_department,
-                      modality: row.modality,
-                      source: 'context_chip',
-                    },
-                  ];
-                });
-              }}
-            />
-            <BundlePickerChips
-              alreadyInCart={cartCodes}
-              onPick={(items) => {
-                setCart((cur) => {
-                  const existing = new Set(cur.map((c) => c.service_code));
-                  const next = [...cur];
-                  for (const it of items) {
-                    if (existing.has(it.service_code)) continue;
-                    next.push({
-                      service_code: it.service_code,
-                      display_name: it.display_name,
-                      sub_department: it.sub_department,
-                      modality: it.modality,
-                      source: 'bundle',
-                    });
-                  }
-                  return next;
-                });
-              }}
-            />
+            The legacy `expanded` state is still bound to the "+ Add a
+            test" affordance in the cart header (so an already-populated
+            cart still gets a fast path to add more), but it no longer
+            gates the search input itself. */}
+        {!loading && (
+          <div className="space-y-3">
             <DiagnosticSearch
               onAdd={add}
               cartCodes={cartCodes}
-              autoFocus
               encounterId={encounterId}
             />
-            <div className="mt-3 flex items-center justify-between text-[11px] text-even-ink-500">
-              <span>Type to search the EHRC catalog (2,334 tests).</span>
-              <button
-                type="button"
-                onClick={() => setExpanded(false)}
-                className="text-even-ink-500 hover:text-even-navy"
-              >
-                Hide search ↑
-              </button>
-            </div>
+            <CollapsedSuggestions label="Show suggested + bundle tests">
+              <div className="space-y-3 rounded-md border border-even-blue-100 bg-even-blue-50/30 p-3">
+                <SuggestedOrderChips
+                  encounterId={encounterId}
+                  alreadyInCart={cartCodes}
+                  onAdd={(row) => {
+                    setCart((cur) => {
+                      if (cur.some((c) => c.service_code === row.service_code)) return cur;
+                      return [
+                        ...cur,
+                        {
+                          service_code: row.service_code,
+                          display_name: row.display_name,
+                          sub_department: row.sub_department,
+                          modality: row.modality,
+                          source: 'context_chip',
+                        },
+                      ];
+                    });
+                  }}
+                />
+                <BundlePickerChips
+                  alreadyInCart={cartCodes}
+                  onPick={(items) => {
+                    setCart((cur) => {
+                      const existing = new Set(cur.map((c) => c.service_code));
+                      const next = [...cur];
+                      for (const it of items) {
+                        if (existing.has(it.service_code)) continue;
+                        next.push({
+                          service_code: it.service_code,
+                          display_name: it.display_name,
+                          sub_department: it.sub_department,
+                          modality: it.modality,
+                          source: 'bundle',
+                        });
+                      }
+                      return next;
+                    });
+                  }}
+                />
+              </div>
+            </CollapsedSuggestions>
+            {cart.length === 0 && pendingCancel.size === 0 && !confirmedMessage && (
+              <p className="text-[11px] text-even-ink-500">
+                Type a test name to search the EHRC catalog, or expand suggestions above.
+              </p>
+            )}
           </div>
         )}
 
@@ -307,15 +301,7 @@ export function DiagnosticsQuickAddStrip({
               <span className="text-[11px] uppercase tracking-wider text-even-ink-500">
                 Cart · {cart.length} kept{pendingCancel.size > 0 && ` · ${pendingCancel.size} to cancel`}
               </span>
-              {!expanded && (
-                <button
-                  type="button"
-                  onClick={() => setExpanded(true)}
-                  className="rounded-md border border-even-blue-200 bg-white px-2 py-0.5 text-[11px] text-even-blue-700 hover:bg-even-blue-50"
-                >
-                  + Add a test
-                </button>
-              )}
+              {/* v5.0.4 — search is always visible above, no need for re-expand */}
             </div>
 
             <ul className="divide-y divide-even-ink-50">

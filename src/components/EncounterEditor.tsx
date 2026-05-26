@@ -604,12 +604,13 @@ export function EncounterEditor({
           encounterId={initial.id}
           sectionKey="diagnostics"
         >
-          <CollapsedSuggestions label="Show quick-add diagnostics">
-            <DiagnosticsQuickAddStrip
-              encounterId={initial.id}
-              readOnly={readOnly}
-            />
-          </CollapsedSuggestions>
+          {/* v5.0.4 — unwrapped from CollapsedSuggestions. The strip itself
+              now renders DiagnosticSearch always-visible and tucks
+              suggestions inside its own inner CollapsedSuggestions. */}
+          <DiagnosticsQuickAddStrip
+            encounterId={initial.id}
+            readOnly={readOnly}
+          />
         </Section>
       )}
 
