@@ -30,6 +30,12 @@ import { getCurrentUser } from '@/lib/auth';
 import { transcribeAudio } from '@/lib/transcribe';
 import { qwenJson, QwenError } from '@/lib/qwen';
 import { loadComorbidityContext, comorbidityContextForPrompt } from '@/lib/patient-comorbidity-context';
+import { makeNdjsonStream, ndjsonHeaders, type ProgressEvent } from '@/lib/llm-trace/stream';
+import { openTrace } from '@/lib/llm-trace/log';
+import { withHeartbeat } from '@/lib/llm-trace/heartbeat';
+
+type PipelineEmit = (ev: ProgressEvent) => void;
+const noopEmit: PipelineEmit = () => {};
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -131,6 +137,62 @@ export async function POST(
       { ok: false, error: 'invalid_multipart', detail: msg.slice(0, 200) },
       { status: 400 },
     );
+  }
+
+  // v6.0 Phase 2E — Accept-header branch.
+  const accept = req.headers.get('accept') ?? '';
+  const wantsStream = accept.includes('application/x-ndjson');
+
+  if (wantsStream) {
+    const trace = await openTrace({
+      surface: 'voice-query',
+      encounter_id: id,
+      patient_id: enc.patient_id,
+      doctor_email: session.email,
+      request_input: { mime: mimeType },
+    });
+    const { stream, emit: ndEmit, close } = makeNdjsonStream();
+    const abort = new AbortController();
+    const emit: PipelineEmit = (ev) => {
+      ndEmit(ev);
+      if (ev.type === 'progress') trace.event(ev.stage, ev.msg, ev.ms);
+    };
+    const tStart = Date.now();
+
+    (async () => {
+      try {
+        const result = await runVoiceQueryPipeline(
+          { encounterId: id, patientId: enc.patient_id, doctorId, audio, mimeType, signal: abort.signal },
+          emit,
+        );
+        ndEmit({ type: 'result', data: result });
+        ndEmit({ type: 'done', ms: Date.now() - tStart });
+        await trace.finalise({
+          status: 'completed',
+          result_summary: {
+            question_len: result.question_transcript.length,
+            answer_len: result.answer_text.length,
+            latency_ms: result.latency_ms,
+            source_count: result.source_encounter_ids.length,
+          },
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        ndEmit({ type: 'error', message: msg });
+        await trace.finalise({ status: 'errored', error_message: msg });
+      } finally {
+        close();
+      }
+    })();
+
+    req.signal?.addEventListener('abort', () => abort.abort(), { once: true });
+
+    return new Response(stream, {
+      headers: {
+        ...Object.fromEntries(ndjsonHeaders()),
+        'X-Trace-Id': trace.id,
+      },
+    });
   }
 
   // 1. Deepgram.
@@ -281,4 +343,162 @@ export async function GET(
     [id],
   );
   return NextResponse.json({ ok: true, queries: rows });
+}
+
+// ---------------------------------------------------------------------------
+// v6.0 Phase 2E — runVoiceQueryPipeline
+//
+// Shared inner pipeline used by the NDJSON branch. Mirrors the inline
+// JSON branch's flow (transcribe → load context → qwen → persist) but
+// emits progress events at each phase. The JSON branch keeps its
+// original inline code for backwards compatibility.
+// ---------------------------------------------------------------------------
+
+type VoiceQueryCtx = {
+  encounterId: string;
+  patientId: string;
+  doctorId: string;
+  audio: Blob;
+  mimeType: string;
+  signal?: AbortSignal;
+};
+
+type VoiceQueryResult = {
+  ok: true;
+  id: string | null;
+  question_transcript: string;
+  answer_text: string;
+  source_encounter_ids: string[];
+  latency_ms: number;
+};
+
+async function runVoiceQueryPipeline(
+  ctx: VoiceQueryCtx,
+  emit: PipelineEmit,
+): Promise<VoiceQueryResult> {
+  const t0 = Date.now();
+
+  // 1. Transcribe with Deepgram.
+  emit({ type: 'progress', stage: 'transcribing' as any, msg: 'Transcribing your question with Deepgram nova-3-medical' });
+  const transcribed = await transcribeAudio(ctx.audio, ctx.mimeType);
+  if (!transcribed.ok) {
+    throw new Error(`transcribe_failed: ${transcribed.error}`);
+  }
+  const question = transcribed.transcript.trim();
+  if (!question) {
+    throw new Error('empty_transcript');
+  }
+  emit({ type: 'progress', stage: 'transcribing' as any, msg: `Transcribed (${question.length} chars)`, ms: Date.now() - t0 });
+
+  // 2. Load patient context.
+  emit({ type: 'progress', stage: 'expanding' as any, msg: 'Building chart context (problems + Rx + past encounters)' });
+
+  const { rows: pRows } = await pool.query<{
+    known_allergies: string | null;
+    problems_json: { label: string; status?: string }[] | null;
+    meds_json:
+      | { generic_name?: string; brand_name?: string; dose?: string; status?: string }[]
+      | null;
+  }>(
+    `SELECT p.known_allergies,
+            ps.summary->'problems' AS problems_json,
+            ps.summary->'medications_active' AS meds_json
+       FROM patients p
+       LEFT JOIN patient_summaries ps ON ps.patient_id = p.id
+      WHERE p.id = $1 LIMIT 1`,
+    [ctx.patientId],
+  );
+  const pctx = pRows[0] ?? { known_allergies: null, problems_json: null, meds_json: null };
+
+  const { rows: pastRows } = await pool.query<{
+    id: string;
+    encounter_date: string;
+    chief_complaint_text: string | null;
+    assessment_text: string | null;
+  }>(
+    `SELECT id, encounter_date::text AS encounter_date,
+            chief_complaint_text, assessment_text
+       FROM encounters
+      WHERE patient_id = $1 AND status = 'completed' AND id <> $2
+      ORDER BY encounter_date DESC LIMIT 5`,
+    [ctx.patientId, ctx.encounterId],
+  );
+
+  const validIds = new Set(pastRows.map((r) => r.id));
+  const comorbidityCtx = await loadComorbidityContext(ctx.patientId).catch(() => null);
+
+  const userMessage = JSON.stringify({
+    question,
+    background: {
+      active_problems: (pctx.problems_json ?? [])
+        .filter((p) => !p.status || p.status === 'active')
+        .map((p) => p.label),
+      active_meds: (pctx.meds_json ?? [])
+        .filter((m) => !m.status || m.status === 'active')
+        .map((m) => `${m.generic_name || m.brand_name || ''} ${m.dose ?? ''}`.trim()),
+      known_allergies: pctx.known_allergies,
+    },
+    past_encounters: pastRows.map((r) => ({
+      id: r.id,
+      date: r.encounter_date,
+      chief_complaint: r.chief_complaint_text,
+      assessment: r.assessment_text,
+    })),
+    ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {}),
+  });
+
+  emit({ type: 'progress', stage: 'expanding' as any, msg: `Context built — ${pastRows.length} past encounter${pastRows.length === 1 ? '' : 's'} loaded`, ms: Date.now() - t0 });
+
+  // 3. qwen call, wrapped in withHeartbeat for the long path.
+  emit({ type: 'progress', stage: 'generating' as any, msg: 'Answering with the reasoning model, grounded in chart context' });
+
+  let answer = '';
+  let sourceIds: string[] = [];
+  try {
+    const result = await withHeartbeat(emit, 'generating' as any, 'Answering from the chart', async () =>
+      qwenJson<{ answer?: string; source_encounter_ids?: unknown }>(
+        SYSTEM_PROMPT,
+        userMessage,
+        { timeoutMs: 90_000, signal: ctx.signal },
+      ),
+    );
+    answer = String(result.json.answer ?? '').slice(0, 1200).trim();
+    if (!answer) answer = '(The model returned no answer.)';
+    if (Array.isArray(result.json.source_encounter_ids)) {
+      sourceIds = result.json.source_encounter_ids
+        .map(String)
+        .filter((s): s is string => validIds.has(s));
+    }
+  } catch (e) {
+    const msg =
+      e instanceof QwenError ? `${e.kind}: ${e.message}` : e instanceof Error ? e.message : String(e);
+    answer = `(Model call failed: ${msg.slice(0, 200)})`;
+  }
+
+  const latency = Date.now() - t0;
+
+  // 4. Persist.
+  const { rows: insRows } = await pool.query<{ id: string }>(
+    `INSERT INTO voice_queries (
+       encounter_id, doctor_id, question_transcript, answer_text, sources_json, latency_ms
+     ) VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+     RETURNING id`,
+    [
+      ctx.encounterId,
+      ctx.doctorId,
+      question,
+      answer,
+      JSON.stringify({ encounter_ids: sourceIds }),
+      latency,
+    ],
+  );
+
+  return {
+    ok: true,
+    id: insRows[0]?.id ?? null,
+    question_transcript: question,
+    answer_text: answer,
+    source_encounter_ids: sourceIds,
+    latency_ms: latency,
+  };
 }

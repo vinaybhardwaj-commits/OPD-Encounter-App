@@ -27,6 +27,8 @@
  * the server and dropped from memory after the response.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import TracePanel, { type TraceEvent } from '@/components/llm-trace/TracePanel';
+import { consumeNdjson } from '@/lib/llm-trace/ndjson-client';
 
 type VoiceQuery = {
   id: string;
@@ -44,6 +46,11 @@ export function VoiceQueryFab({ encounterId }: { encounterId: string }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [history, setHistory] = useState<VoiceQuery[]>([]);
+
+  // v6.0 Phase 2E — TracePanel state
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [traceTotalMs, setTraceTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadedHistory, setLoadedHistory] = useState(false);
 
@@ -103,14 +110,29 @@ export function VoiceQueryFab({ encounterId }: { encounterId: string }) {
         }
         setPhase('uploading');
         setDrawerOpen(true);
+        // Reset trace state on every fire.
+        setTraceEvents([]);
+        setTraceTotalMs(undefined);
+        setTraceId(null);
         try {
           const fd = new FormData();
           fd.append('audio', blob, 'voice.webm');
           const res = await fetch(
             `/api/encounters/${encounterId}/voice-query`,
-            { method: 'POST', body: fd },
+            {
+              method: 'POST',
+              headers: { Accept: 'application/x-ndjson' },
+              body: fd,
+            },
           );
-          const j = (await res.json()) as {
+          const tid = res.headers.get('X-Trace-Id');
+          if (tid) setTraceId(tid);
+          if (!res.ok) {
+            setError(`HTTP ${res.status}`);
+            setPhase('error');
+            return;
+          }
+          type VQResult = {
             ok?: boolean;
             id?: string;
             question_transcript?: string;
@@ -120,8 +142,25 @@ export function VoiceQueryFab({ encounterId }: { encounterId: string }) {
             error?: string;
             detail?: string;
           };
-          if (!j.ok) {
-            setError(j.detail ?? j.error ?? 'voice_query_failed');
+          const resultRef: { current: VQResult | null } = { current: null };
+          await consumeNdjson(res, (ev) => {
+            if (ev.type === 'progress') {
+              setTraceEvents((prev) => {
+                const next = prev.map((p, i) => (i === prev.length - 1 && !p.done ? { ...p, done: true } : p));
+                return [...next, { stage: ev.stage, msg: ev.msg, ms: ev.ms, done: false, ts: Date.now() }];
+              });
+            } else if (ev.type === 'result') {
+              resultRef.current = ev.data as VQResult;
+            } else if (ev.type === 'done') {
+              setTraceTotalMs(ev.ms);
+              setTraceEvents((prev) => [...prev, { stage: 'done', msg: '', ms: ev.ms, done: true, ts: Date.now() }]);
+            } else if (ev.type === 'error') {
+              setTraceEvents((prev) => [...prev, { stage: 'done', msg: ev.message, done: true, error: true, ts: Date.now() }]);
+            }
+          });
+          const j = resultRef.current;
+          if (!j || !j.ok) {
+            setError(j?.detail ?? j?.error ?? 'voice_query_failed');
             setPhase('error');
             return;
           }
@@ -223,9 +262,14 @@ export function VoiceQueryFab({ encounterId }: { encounterId: string }) {
                 {error}
               </div>
             )}
-            {phase === 'uploading' && (
-              <div className="rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
-                Transcribing + thinking… (5–30s on cold start)
+            {(phase === 'uploading' || traceEvents.length > 0) && (
+              <div>
+                <TracePanel
+                  events={traceEvents}
+                  totalMs={traceTotalMs}
+                  traceId={traceId}
+                  surface="voice-query"
+                />
               </div>
             )}
             {history.length === 0 && phase !== 'uploading' && !error && (
