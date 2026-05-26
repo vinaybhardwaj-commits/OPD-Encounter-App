@@ -222,6 +222,14 @@ export type TracePanelProps = {
   surface?: LLMSurface;
   /** Compact mode for the BackgroundTraceToaster — hides the event list. */
   compact?: boolean;
+  /**
+   * v6.1 — optional callback to fire when the doctor clicks the small
+   * cancel button in the header. The caller should abort its in-flight
+   * fetch (typically by calling abortController.abort()). The panel
+   * renders the cancel button only while !isComplete && !hasError AND
+   * onCancel was provided.
+   */
+  onCancel?: () => void;
 };
 
 export default function TracePanel({
@@ -230,6 +238,7 @@ export default function TracePanel({
   traceId,
   surface,
   compact,
+  onCancel,
 }: TracePanelProps) {
   const [open, setOpen] = useState(!compact);
   const [now, setNow] = useState(() => Date.now());
@@ -312,6 +321,16 @@ export default function TracePanel({
         <span className="text-slate-400">
           {events.length} step{events.length !== 1 ? 's' : ''}
         </span>
+        {onCancel && !isComplete && !hasError && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onCancel(); }}
+            className="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 hover:border-rose-300 hover:text-rose-700"
+            title="Cancel this pipeline"
+          >
+            cancel
+          </button>
+        )}
         {open ? (
           <ChevronUp className="h-3 w-3 text-slate-400" />
         ) : (
