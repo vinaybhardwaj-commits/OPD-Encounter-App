@@ -18,6 +18,8 @@
  * cognitive aid.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import TracePanel, { type TraceEvent } from '@/components/llm-trace/TracePanel';
+import { consumeNdjson } from '@/lib/llm-trace/ndjson-client';
 
 type DdxFinding = {
   condition: string;
@@ -99,19 +101,59 @@ export function DdxOnDemand({
   const lastHashRef = useRef<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // v6.0 Phase 2 — TracePanel state
+  const [trace, setTrace] = useState<TraceEvent[]>([]);
+  const [totalMs, setTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
+
+  function pushTrace(stage: string, msg: string, ms?: number, done = false, error = false) {
+    setTrace((prev) => {
+      // Collapse repeating heartbeat lines "<phase> (Ns on this phase)"
+      // into a single ticking row per phase. Server-side trace keeps every
+      // heartbeat for forensic audit.
+      const HB_RE = /^(.+?) \(\d+s on this phase\)\s*$/;
+      const hbMatch = msg.match(HB_RE);
+      if (hbMatch && prev.length > 0) {
+        const key = hbMatch[1].trim();
+        const last = prev[prev.length - 1];
+        const lastHb = last.msg.match(HB_RE);
+        if (lastHb && lastHb[1].trim() === key) {
+          return [...prev.slice(0, -1), { stage, msg, ms, done, error, ts: Date.now() }];
+        }
+      }
+      // Mark prior in-progress event as done when a new stage starts.
+      const next = prev.map((p, i) =>
+        i === prev.length - 1 && !p.done ? { ...p, done: true } : p,
+      );
+      return [...next, { stage, msg, ms, done, error, ts: Date.now() }];
+    });
+  }
+
   const run = useCallback(async () => {
-    // Cancel any in-flight DDx call (live mode might trigger overlapping calls)
+    // Cancel any in-flight DDx call.
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setState({ kind: 'loading' });
+    // v6.0 Phase 2 — reset trace state.
+    setTrace([]);
+    setTotalMs(undefined);
+    setTraceId(null);
+
     try {
       const res = await fetch(`/api/encounters/${encounterId}/ddx`, {
         method: 'POST',
+        headers: { Accept: 'application/x-ndjson' },
         signal: ctrl.signal,
       });
-      const j = (await res.json()) as {
-        ok?: boolean;
+      if (!res.ok) {
+        setState({ kind: 'failed', error: `HTTP ${res.status}` });
+        return;
+      }
+      const tid = res.headers.get('X-Trace-Id');
+      if (tid) setTraceId(tid);
+
+      let finalResult: {
         status?: 'ok' | 'failed';
         findings?: DdxFinding[];
         citations?: CitationChunk[];
@@ -119,7 +161,26 @@ export function DdxOnDemand({
         latency_ms?: number;
         kb_latency_ms?: number;
         error?: string;
-      };
+      } | null = null;
+
+      await consumeNdjson(res, (ev) => {
+        if (ev.type === 'progress') {
+          pushTrace(ev.stage, ev.msg, ev.ms);
+        } else if (ev.type === 'result') {
+          finalResult = ev.data as typeof finalResult;
+        } else if (ev.type === 'done') {
+          setTotalMs(ev.ms);
+          pushTrace('done', '', ev.ms, true);
+        } else if (ev.type === 'error') {
+          pushTrace('done', ev.message, undefined, true, true);
+        }
+      });
+
+      const j = finalResult;
+      if (!j) {
+        setState({ kind: 'failed', error: 'no_result_event' });
+        return;
+      }
       if (j.status === 'failed') {
         setState({ kind: 'failed', error: j.error ?? 'ddx_failed' });
         return;
@@ -133,7 +194,6 @@ export function DdxOnDemand({
         kb_latency_ms: j.kb_latency_ms,
       });
     } catch (e) {
-      // v3.10.6 — aborted requests are intentional, not failures
       if (e instanceof Error && e.name === 'AbortError') return;
       setState({
         kind: 'failed',
@@ -222,10 +282,14 @@ export function DdxOnDemand({
         </p>
       )}
 
-      {isLoading && (
-        <p className="mt-2 text-[11px] italic text-even-ink-400">
-          Pulling patient context for a ranked differential…
-        </p>
+      {/* v6.0 Phase 2 — TracePanel replaces the bland 'Pulling patient context…'
+          line with a live, milestone-anchored progress bar + ETA + per-stage
+          explainer + forensic trace link. Renders when there are events; the
+          older live-mode users still see the 'Thinking…' button label. */}
+      {(trace.length > 0 || isLoading) && (
+        <div className="mt-2">
+          <TracePanel events={trace} totalMs={totalMs} traceId={traceId} surface="ddx" />
+        </div>
       )}
 
       {isOk && state.findings.length === 0 && (
