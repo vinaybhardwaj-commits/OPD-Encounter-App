@@ -153,7 +153,7 @@ export function DdxOnDemand({
       const tid = res.headers.get('X-Trace-Id');
       if (tid) setTraceId(tid);
 
-      let finalResult: {
+      type DdxResult = {
         status?: 'ok' | 'failed';
         findings?: DdxFinding[];
         citations?: CitationChunk[];
@@ -161,13 +161,16 @@ export function DdxOnDemand({
         latency_ms?: number;
         kb_latency_ms?: number;
         error?: string;
-      } | null = null;
+      };
+      // Use a ref-style container so TS doesn't narrow the captured
+      // local to 'never' after the consumeNdjson callback returns.
+      const resultRef: { current: DdxResult | null } = { current: null };
 
       await consumeNdjson(res, (ev) => {
         if (ev.type === 'progress') {
           pushTrace(ev.stage, ev.msg, ev.ms);
         } else if (ev.type === 'result') {
-          finalResult = ev.data as typeof finalResult;
+          resultRef.current = ev.data as DdxResult;
         } else if (ev.type === 'done') {
           setTotalMs(ev.ms);
           pushTrace('done', '', ev.ms, true);
@@ -176,7 +179,7 @@ export function DdxOnDemand({
         }
       });
 
-      const j = finalResult;
+      const j = resultRef.current;
       if (!j) {
         setState({ kind: 'failed', error: 'no_result_event' });
         return;
