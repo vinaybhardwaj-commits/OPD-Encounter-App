@@ -37,6 +37,12 @@ import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { qwenJson, QwenError } from '@/lib/qwen';
 import type { PrescriptionLine } from '@/components/DrugRow';
+import { makeNdjsonStream, ndjsonHeaders, type ProgressEvent } from '@/lib/llm-trace/stream';
+import { openTrace } from '@/lib/llm-trace/log';
+import { withHeartbeat } from '@/lib/llm-trace/heartbeat';
+
+type PipelineEmit = (ev: ProgressEvent) => void;
+const noopEmit: PipelineEmit = () => {};
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -90,7 +96,7 @@ Conservatively skip findings the doctor would already know (NSAID + warfarin; AC
 Return ONLY the JSON object. No prose, no markdown fences.`;
 
 export async function POST(
-  _req: Request,
+  req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
   const session = await getCurrentUser();
@@ -212,6 +218,59 @@ export async function POST(
   });
 
   const scanned_at = new Date().toISOString();
+
+  // v6.0 Phase 3 — Accept-header branch (NDJSON streaming variant).
+  const accept = req.headers.get('accept') ?? '';
+  const wantsStream = accept.includes('application/x-ndjson');
+
+  if (wantsStream) {
+    const trace = await openTrace({
+      surface: 'ddi-scan',
+      encounter_id: id,
+      patient_id: enc.patient_id,
+      doctor_email: session.email,
+      request_input: { rx_lines: lines.length, problems: activeProblems.length, allergies: pctx.known_allergies ? 1 : 0 },
+    });
+    const { stream, emit: ndEmit, close } = makeNdjsonStream();
+    const abort = new AbortController();
+    const emit: PipelineEmit = (ev) => {
+      ndEmit(ev);
+      if (ev.type === 'progress') trace.event(ev.stage, ev.msg, ev.ms);
+    };
+    const tStart = Date.now();
+
+    (async () => {
+      try {
+        const payload = await runDdiScanPipeline(
+          { id, userMessage, scanned_at, signal: abort.signal },
+          emit,
+        );
+        ndEmit({ type: 'result', data: { ok: true, ...payload } });
+        ndEmit({ type: 'done', ms: Date.now() - tStart });
+        await trace.finalise({
+          status: payload.status === 'ok' ? 'completed' : 'errored',
+          result_summary: payload.status === 'ok' ? { findings: payload.findings.length, latency_ms: payload.latency_ms } : { reason: payload.error },
+          error_message: payload.status === 'failed' ? payload.error : undefined,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        ndEmit({ type: 'error', message: msg });
+        await trace.finalise({ status: 'errored', error_message: msg });
+      } finally {
+        close();
+      }
+    })();
+
+    req.signal?.addEventListener('abort', () => abort.abort(), { once: true });
+
+    return new Response(stream, {
+      headers: {
+        ...Object.fromEntries(ndjsonHeaders()),
+        'X-Trace-Id': trace.id,
+      },
+    });
+  }
+
   let payload: DdiPayload;
   try {
     const result = await qwenJson<{
@@ -277,3 +336,86 @@ function normalizeSeverity(
     return v;
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// v6.0 Phase 3 — runDdiScanPipeline
+// Mirrors the legacy inline DDI scan; emits progress events.
+// JSON branch above unchanged.
+// ---------------------------------------------------------------------------
+
+type DdiScanPipelineCtx = {
+  id: string;
+  userMessage: string;
+  scanned_at: string;
+  signal?: AbortSignal;
+};
+
+async function runDdiScanPipeline(
+  ctx: DdiScanPipelineCtx,
+  emit: PipelineEmit,
+): Promise<DdiPayload> {
+  emit({ type: 'progress', stage: 'generating' as Stage, msg: 'Prompting the reasoning model for DDI scan' });
+
+  let payload: DdiPayload;
+  try {
+    const result = await withHeartbeat(emit, 'generating' as Stage, 'Scanning drug-drug interactions', async () =>
+      qwenJson<{
+        findings?: Array<{
+          severity?: string;
+          pair?: unknown;
+          rationale?: string;
+          recommendation?: string | null;
+        }>;
+      }>(SYSTEM_PROMPT, ctx.userMessage, { timeoutMs: 90_000, signal: ctx.signal }),
+    );
+
+    emit({ type: 'progress', stage: 'parsing' as Stage, msg: 'Parsing DDI findings', ms: result.latency_ms });
+
+    const findings: DdiFinding[] = [];
+    for (const f of result.json.findings ?? []) {
+      const severity = normalizeSeverity(f.severity);
+      if (!severity) continue;
+      const pair = Array.isArray(f.pair)
+        ? (f.pair.slice(0, 2).map(String) as [string, string])
+        : null;
+      if (!pair || pair.length < 2) continue;
+      findings.push({
+        severity,
+        pair,
+        rationale: String(f.rationale ?? '').slice(0, 400),
+        recommendation: f.recommendation ? String(f.recommendation).slice(0, 200) : null,
+        scanned_at: ctx.scanned_at,
+      });
+    }
+
+    payload = {
+      status: 'ok',
+      findings,
+      scanned_at: ctx.scanned_at,
+      latency_ms: result.latency_ms,
+    };
+  } catch (e) {
+    const msg =
+      e instanceof QwenError
+        ? `${e.kind}: ${e.message}`
+        : e instanceof Error
+        ? e.message
+        : String(e);
+    payload = {
+      status: 'failed',
+      error: msg.slice(0, 300),
+      scanned_at: ctx.scanned_at,
+    };
+  }
+
+  emit({ type: 'progress', stage: 'persisting' as Stage, msg: 'Caching DDI findings' });
+
+  await pool.query(
+    `UPDATE encounters SET ddi_findings = $2::jsonb WHERE id = $1`,
+    [ctx.id, JSON.stringify(payload)],
+  );
+
+  return payload;
+}
+
+type Stage = 'expanding' | 'retrieving' | 'reranking' | 'fusing' | 'generating' | 'drafting' | 'reviewing' | 'revising' | 'finalizing' | 'parsing' | 'persisting' | 'done' | 'variants';

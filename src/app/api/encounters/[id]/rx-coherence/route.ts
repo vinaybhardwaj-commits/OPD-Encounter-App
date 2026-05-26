@@ -28,6 +28,12 @@ import { getCurrentUser } from '@/lib/auth';
 import { qwenJson, QwenError } from '@/lib/qwen';
 import { lookupChronicRx, type ChronicRxEntry } from '@/lib/rx-comorbidity-map';
 import { isValidIcd10 } from '@/lib/comorbidities-catalog';
+import { makeNdjsonStream, ndjsonHeaders, type ProgressEvent } from '@/lib/llm-trace/stream';
+import { openTrace } from '@/lib/llm-trace/log';
+import { withHeartbeat } from '@/lib/llm-trace/heartbeat';
+
+type PipelineEmit = (ev: ProgressEvent) => void;
+const noopEmit: PipelineEmit = () => {};
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -165,6 +171,57 @@ export async function POST(
       }
     }
 
+    // v6.0 Phase 3 — Accept-header branch (NDJSON streaming variant).
+    const accept = req.headers.get('accept') ?? '';
+    const wantsStream = accept.includes('application/x-ndjson');
+
+    if (wantsStream) {
+      const trace = await openTrace({
+        surface: 'rx-coherence',
+        encounter_id: encounterId,
+        patient_id: patientId,
+        doctor_email: session.email,
+        request_input: { line_count: lines.length, static_warnings: warnings.length, qwen_candidates: unmappedForQwen.length },
+      });
+      const { stream, emit: ndEmit, close } = makeNdjsonStream();
+      const abort = new AbortController();
+      const emit: PipelineEmit = (ev) => {
+        ndEmit(ev);
+        if (ev.type === 'progress') trace.event(ev.stage, ev.msg, ev.ms);
+      };
+      const tStart = Date.now();
+
+      (async () => {
+        try {
+          const payload = await runRxCoherencePipeline(
+            { warnings: warnings.slice(), unmappedForQwen, existingCodes, handledKeys, signal: abort.signal },
+            emit,
+          );
+          ndEmit({ type: 'result', data: { ok: true, ...payload } });
+          ndEmit({ type: 'done', ms: Date.now() - tStart });
+          await trace.finalise({
+            status: 'completed',
+            result_summary: { warnings: payload.warnings.length, stats: payload.stats },
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          ndEmit({ type: 'error', message: msg });
+          await trace.finalise({ status: 'errored', error_message: msg });
+        } finally {
+          close();
+        }
+      })();
+
+      req.signal?.addEventListener('abort', () => abort.abort(), { once: true });
+
+      return new Response(stream, {
+        headers: {
+          ...Object.fromEntries(ndjsonHeaders()),
+          'X-Trace-Id': trace.id,
+        },
+      });
+    }
+
     // --- Qwen fallback for unmapped drugs ---
     let qwenAdded = 0;
     if (unmappedForQwen.length > 0) {
@@ -216,3 +273,88 @@ export async function POST(
     return NextResponse.json({ ok: false, error: 'server_error', detail: msg.slice(0, 300) }, { status: 500 });
   }
 }
+
+// ---------------------------------------------------------------------------
+// v6.0 Phase 3 — runRxCoherencePipeline
+// Mirrors the legacy inline Qwen-fallback code; emits progress events.
+// JSON branch above is unchanged.
+// ---------------------------------------------------------------------------
+
+type RxCoherencePipelineCtx = {
+  warnings: Warning[];
+  unmappedForQwen: Array<{ index: number; name: string }>;
+  existingCodes: Set<string>;
+  handledKeys: Set<string>;
+  signal?: AbortSignal;
+};
+
+type RxCoherenceResult = {
+  warnings: Warning[];
+  stats: { total: number; static: number; qwen: number };
+  qwen_failed?: string;
+};
+
+async function runRxCoherencePipeline(
+  ctx: RxCoherencePipelineCtx,
+  emit: PipelineEmit,
+): Promise<RxCoherenceResult> {
+  const warnings = ctx.warnings;
+  let qwenAdded = 0;
+
+  if (ctx.unmappedForQwen.length === 0) {
+    emit({ type: 'progress', stage: 'parsing' as Stage, msg: 'No unmapped drugs needed LLM fallback' });
+    return {
+      warnings,
+      stats: { total: warnings.length, static: warnings.length, qwen: 0 },
+    };
+  }
+
+  emit({ type: 'progress', stage: 'generating' as Stage, msg: `Prompting the reasoning model for ${ctx.unmappedForQwen.length} unmapped drug(s)` });
+
+  try {
+    const t0 = Date.now();
+    const result = await withHeartbeat(emit, 'generating' as Stage, 'Inferring chronic-drug mappings', async () =>
+      qwenJson<{ findings: Array<{ index: number; comorbidity_code: string; comorbidity_label: string; confidence: number }> }>(
+        QWEN_SYSTEM_PROMPT,
+        JSON.stringify({ drugs: ctx.unmappedForQwen }),
+        { timeoutMs: 30_000, signal: ctx.signal },
+      ),
+    );
+    const latency_ms = Date.now() - t0;
+    emit({ type: 'progress', stage: 'parsing' as Stage, msg: 'Parsing Rx coherence findings', ms: latency_ms });
+
+    const findings = result.json.findings ?? [];
+    for (const f of findings) {
+      if (typeof f.index !== 'number') continue;
+      const rxLine = ctx.unmappedForQwen.find((u) => u.index === f.index);
+      if (!rxLine) continue;
+      const code = (f.comorbidity_code || '').trim().toUpperCase();
+      if (!isValidIcd10(code)) continue;
+      if (ctx.existingCodes.has(code)) continue;
+      const key = `${rxLine.name.toLowerCase()}::${code}`;
+      if (ctx.handledKeys.has(key)) continue;
+      warnings.push({
+        rx_index: rxLine.index,
+        drug_name: rxLine.name,
+        comorbidity_code: code,
+        comorbidity_label: (f.comorbidity_label || '').slice(0, 200) || code,
+        source: 'qwen',
+        confidence: Math.min(0.85, Math.max(0, Number(f.confidence) || 0.5)),
+      });
+      qwenAdded++;
+    }
+    return {
+      warnings,
+      stats: { total: warnings.length, static: warnings.length - qwenAdded, qwen: qwenAdded },
+    };
+  } catch (e) {
+    const msg = e instanceof QwenError ? `Qwen ${e.kind}` : e instanceof Error ? e.message : String(e);
+    return {
+      warnings,
+      stats: { total: warnings.length, static: warnings.length, qwen: 0 },
+      qwen_failed: msg.slice(0, 120),
+    };
+  }
+}
+
+type Stage = 'expanding' | 'retrieving' | 'reranking' | 'fusing' | 'generating' | 'drafting' | 'reviewing' | 'revising' | 'finalizing' | 'parsing' | 'persisting' | 'done' | 'variants';

@@ -20,6 +20,12 @@ import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { qwenJson, QwenError } from '@/lib/qwen';
 import { isValidIcd10 } from '@/lib/comorbidities-catalog';
+import { makeNdjsonStream, ndjsonHeaders, type ProgressEvent } from '@/lib/llm-trace/stream';
+import { openTrace } from '@/lib/llm-trace/log';
+import { withHeartbeat } from '@/lib/llm-trace/heartbeat';
+
+type PipelineEmit = (ev: ProgressEvent) => void;
+const noopEmit: PipelineEmit = () => {};
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -54,7 +60,7 @@ Rules:
 Return ONLY the JSON object. No markdown, no preamble.`;
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
   try {
@@ -142,6 +148,58 @@ export async function POST(
       auto_derived_problems_hint: auto_derived_problems,
     });
 
+    // v6.0 Phase 3 — Accept-header branch (NDJSON streaming variant).
+    const accept = req.headers.get('accept') ?? '';
+    const wantsStream = accept.includes('application/x-ndjson');
+
+    if (wantsStream) {
+      const trace = await openTrace({
+        surface: 'comorbidity-history',
+        encounter_id: null,
+        patient_id: patientId,
+        doctor_email: session.email,
+        request_input: { encounters_scanned: encsRes.rows.length, current_codes: currentCodes.size },
+      });
+      const { stream, emit: ndEmit, close } = makeNdjsonStream();
+      const abort = new AbortController();
+      const emit: PipelineEmit = (ev) => {
+        ndEmit(ev);
+        if (ev.type === 'progress') trace.event(ev.stage, ev.msg, ev.ms);
+      };
+      const tStart = Date.now();
+
+      (async () => {
+        try {
+          const payload = await runComorbidityHistoryPipeline(
+            { userMessage, currentCodes, encountersScanned: encsRes.rows.length, signal: abort.signal },
+            emit,
+          );
+          ndEmit({ type: 'result', data: { ok: true, ...payload } });
+          ndEmit({ type: 'done', ms: Date.now() - tStart });
+          await trace.finalise({
+            status: payload.error ? 'errored' : 'completed',
+            result_summary: { suggestions: payload.suggestions.length, latency_ms: payload.latency_ms },
+            error_message: payload.error,
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          ndEmit({ type: 'error', message: msg });
+          await trace.finalise({ status: 'errored', error_message: msg });
+        } finally {
+          close();
+        }
+      })();
+
+      req.signal?.addEventListener('abort', () => abort.abort(), { once: true });
+
+      return new Response(stream, {
+        headers: {
+          ...Object.fromEntries(ndjsonHeaders()),
+          'X-Trace-Id': trace.id,
+        },
+      });
+    }
+
     const t0 = Date.now();
     const result = await qwenJson<{ suggestions: Array<{ code: string; label: string; rationale: string; confidence: number }> }>(
       SYSTEM_PROMPT,
@@ -172,3 +230,73 @@ export async function POST(
     return NextResponse.json({ ok: true, suggestions: [], error: msg.slice(0, 200) });
   }
 }
+
+// ---------------------------------------------------------------------------
+// v6.0 Phase 3 — runComorbidityHistoryPipeline
+// Mirrors the legacy inline code; emits progress events.
+// JSON branch above unchanged.
+// ---------------------------------------------------------------------------
+
+type ComorbidityHistoryPipelineCtx = {
+  userMessage: string;
+  currentCodes: Set<string>;
+  encountersScanned: number;
+  signal?: AbortSignal;
+};
+
+type ComorbidityHistoryResult = {
+  suggestions: Suggestion[];
+  latency_ms: number;
+  encounters_scanned: number;
+  error?: string;
+};
+
+async function runComorbidityHistoryPipeline(
+  ctx: ComorbidityHistoryPipelineCtx,
+  emit: PipelineEmit,
+): Promise<ComorbidityHistoryResult> {
+  emit({ type: 'progress', stage: 'expanding' as Stage, msg: `Bundling ${ctx.encountersScanned} past encounters + active Rx + problems hint` });
+
+  emit({ type: 'progress', stage: 'generating' as Stage, msg: 'Prompting the reasoning model for chronic comorbidities' });
+
+  try {
+    const t0 = Date.now();
+    const result = await withHeartbeat(emit, 'generating' as Stage, 'Extracting chronic comorbidities from history', async () =>
+      qwenJson<{ suggestions: Array<{ code: string; label: string; rationale: string; confidence: number }> }>(
+        SYSTEM_PROMPT,
+        ctx.userMessage,
+        { timeoutMs: 60_000, signal: ctx.signal },
+      ),
+    );
+    const latency_ms = Date.now() - t0;
+
+    emit({ type: 'progress', stage: 'parsing' as Stage, msg: 'Parsing comorbidity suggestions', ms: latency_ms });
+
+    const clean: Suggestion[] = (result.json.suggestions ?? [])
+      .filter((s) => s.code && isValidIcd10(s.code.trim().toUpperCase()))
+      .filter((s) => !ctx.currentCodes.has(s.code.trim().toUpperCase()))
+      .slice(0, 10)
+      .map((s) => ({
+        code: s.code.trim().toUpperCase(),
+        label: (s.label ?? '').slice(0, 200) || s.code,
+        rationale: (s.rationale ?? '').slice(0, 120),
+        confidence: Math.max(0, Math.min(1, Number(s.confidence) || 0.5)),
+      }));
+
+    return {
+      suggestions: clean,
+      latency_ms,
+      encounters_scanned: ctx.encountersScanned,
+    };
+  } catch (e) {
+    const msg = e instanceof QwenError ? `Qwen ${e.kind}` : e instanceof Error ? e.message : String(e);
+    return {
+      suggestions: [],
+      latency_ms: 0,
+      encounters_scanned: ctx.encountersScanned,
+      error: msg.slice(0, 200),
+    };
+  }
+}
+
+type Stage = 'expanding' | 'retrieving' | 'reranking' | 'fusing' | 'generating' | 'drafting' | 'reviewing' | 'revising' | 'finalizing' | 'parsing' | 'persisting' | 'done' | 'variants';

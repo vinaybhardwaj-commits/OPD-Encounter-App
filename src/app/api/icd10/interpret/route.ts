@@ -23,6 +23,12 @@ import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { qwenJson, QwenError } from '@/lib/qwen';
 import { loadComorbidityContext, comorbidityContextForPrompt } from '@/lib/patient-comorbidity-context';
+import { makeNdjsonStream, ndjsonHeaders, type ProgressEvent } from '@/lib/llm-trace/stream';
+import { openTrace } from '@/lib/llm-trace/log';
+import { withHeartbeat } from '@/lib/llm-trace/heartbeat';
+
+type PipelineEmit = (ev: ProgressEvent) => void;
+const noopEmit: PipelineEmit = () => {};
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -117,6 +123,58 @@ export async function POST(req: Request) {
       ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
     });
   
+    // v6.0 Phase 3 — Accept-header branch (NDJSON streaming variant).
+    const accept = req.headers.get('accept') ?? '';
+    const wantsStream = accept.includes('application/x-ndjson');
+
+    if (wantsStream) {
+      const trace = await openTrace({
+        surface: 'icd10-interpret',
+        encounter_id: body.encounter_id && /^[0-9a-f-]{36}$/i.test(body.encounter_id) ? body.encounter_id : null,
+        patient_id: ctxPatientId,
+        doctor_email: (await getCurrentUser())?.email ?? 'migration-secret',
+        request_input: { free_text_len: freeText.length, has_encounter: !!body.encounter_id, has_patient: !!ctxPatientId },
+      });
+      const { stream, emit: ndEmit, close } = makeNdjsonStream();
+      const abort = new AbortController();
+      const emit: PipelineEmit = (ev) => {
+        ndEmit(ev);
+        if (ev.type === 'progress') trace.event(ev.stage, ev.msg, ev.ms);
+      };
+      const tStart = Date.now();
+
+      (async () => {
+        try {
+          const payload = await runIcd10InterpretPipeline(
+            { userMessage, signal: abort.signal },
+            emit,
+          );
+          ndEmit({ type: 'result', data: { ok: true, ...payload } });
+          ndEmit({ type: 'done', ms: Date.now() - tStart });
+          await trace.finalise({
+            status: payload.error ? 'errored' : 'completed',
+            result_summary: { suggestions: payload.suggestions.length, latency_ms: payload.latency_ms ?? 0 },
+            error_message: payload.error,
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          ndEmit({ type: 'error', message: msg });
+          await trace.finalise({ status: 'errored', error_message: msg });
+        } finally {
+          close();
+        }
+      })();
+
+      req.signal?.addEventListener('abort', () => abort.abort(), { once: true });
+
+      return new Response(stream, {
+        headers: {
+          ...Object.fromEntries(ndjsonHeaders()),
+          'X-Trace-Id': trace.id,
+        },
+      });
+    }
+
     try {
       const t0 = Date.now();
       const result = await qwenJson<{ suggestions: Array<{ code: string; label: string; rationale: string; confidence: number }> }>(
@@ -152,3 +210,58 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "server_error", detail: msg.slice(0, 300) }, { status: 500 });
   }
 }
+
+// ---------------------------------------------------------------------------
+// v6.0 Phase 3 — runIcd10InterpretPipeline
+// Mirrors the legacy inline Qwen interpreter; emits progress events.
+// JSON branch above unchanged.
+// ---------------------------------------------------------------------------
+
+type Icd10InterpretPipelineCtx = {
+  userMessage: string;
+  signal?: AbortSignal;
+};
+
+type Icd10InterpretResult = {
+  suggestions: Suggestion[];
+  latency_ms?: number;
+  error?: string;
+};
+
+async function runIcd10InterpretPipeline(
+  ctx: Icd10InterpretPipelineCtx,
+  emit: PipelineEmit,
+): Promise<Icd10InterpretResult> {
+  emit({ type: 'progress', stage: 'generating' as Stage, msg: 'Prompting the reasoning model for ICD-10 codes' });
+
+  try {
+    const t0 = Date.now();
+    const result = await withHeartbeat(emit, 'generating' as Stage, 'Interpreting clinical text', async () =>
+      qwenJson<{ suggestions: Array<{ code: string; label: string; rationale: string; confidence: number }> }>(
+        SYSTEM_PROMPT,
+        ctx.userMessage,
+        { timeoutMs: 45_000, signal: ctx.signal },
+      ),
+    );
+    const latency_ms = Date.now() - t0;
+
+    emit({ type: 'progress', stage: 'parsing' as Stage, msg: 'Parsing ICD-10 suggestions', ms: latency_ms });
+
+    const clean: Suggestion[] = (result.json.suggestions ?? [])
+      .filter((s) => s.code && ICD10_REGEX.test(s.code.trim().toUpperCase()))
+      .slice(0, 8)
+      .map((s) => ({
+        code: s.code.trim().toUpperCase(),
+        label: (s.label ?? '').slice(0, 200) || s.code,
+        rationale: (s.rationale ?? '').slice(0, 100),
+        confidence: Math.max(0, Math.min(1, Number(s.confidence) || 0.5)),
+      }));
+
+    return { suggestions: clean, latency_ms };
+  } catch (e) {
+    const msg = e instanceof QwenError ? `Qwen ${e.kind}` : e instanceof Error ? e.message : String(e);
+    return { suggestions: [], error: msg.slice(0, 200) };
+  }
+}
+
+type Stage = 'expanding' | 'retrieving' | 'reranking' | 'fusing' | 'generating' | 'drafting' | 'reviewing' | 'revising' | 'finalizing' | 'parsing' | 'persisting' | 'done' | 'variants';

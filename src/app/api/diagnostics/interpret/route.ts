@@ -28,6 +28,12 @@ import { pool } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { qwenJson, QwenError } from '@/lib/qwen';
 import { loadComorbidityContext, comorbidityContextForPrompt } from '@/lib/patient-comorbidity-context';
+import { makeNdjsonStream, ndjsonHeaders, type ProgressEvent } from '@/lib/llm-trace/stream';
+import { openTrace } from '@/lib/llm-trace/log';
+import { withHeartbeat } from '@/lib/llm-trace/heartbeat';
+
+type PipelineEmit = (ev: ProgressEvent) => void;
+const noopEmit: PipelineEmit = () => {};
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -189,6 +195,58 @@ export async function POST(req: Request) {
       ...(comorbidityCtx ? comorbidityContextForPrompt(comorbidityCtx) : {})
     });
   
+    // v6.0 Phase 3 — Accept-header branch (NDJSON streaming variant).
+    const accept = req.headers.get('accept') ?? '';
+    const wantsStream = accept.includes('application/x-ndjson');
+
+    if (wantsStream) {
+      const trace = await openTrace({
+        surface: 'diagnostics-interpret',
+        encounter_id: encounterId,
+        patient_id: enc.patient_id,
+        doctor_email: session.email,
+        request_input: { free_text_len: freeText.length, modality: modalityFilter ?? null, candidates: catalog.length },
+      });
+      const { stream, emit: ndEmit, close } = makeNdjsonStream();
+      const abort = new AbortController();
+      const emit: PipelineEmit = (ev) => {
+        ndEmit(ev);
+        if (ev.type === 'progress') trace.event(ev.stage, ev.msg, ev.ms);
+      };
+      const tStart = Date.now();
+
+      (async () => {
+        try {
+          const payload = await runDiagnosticsInterpretPipeline(
+            { catalog, userMessage, signal: abort.signal },
+            emit,
+          );
+          ndEmit({ type: 'result', data: { ok: true, ...payload } });
+          ndEmit({ type: 'done', ms: Date.now() - tStart });
+          await trace.finalise({
+            status: payload.error ? 'errored' : 'completed',
+            result_summary: { suggestions: payload.suggestions.length, latency_ms: payload.latency_ms ?? 0 },
+            error_message: payload.error,
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          ndEmit({ type: 'error', message: msg });
+          await trace.finalise({ status: 'errored', error_message: msg });
+        } finally {
+          close();
+        }
+      })();
+
+      req.signal?.addEventListener('abort', () => abort.abort(), { once: true });
+
+      return new Response(stream, {
+        headers: {
+          ...Object.fromEntries(ndjsonHeaders()),
+          'X-Trace-Id': trace.id,
+        },
+      });
+    }
+
     try {
       const t0 = Date.now();
       const result = await qwenJson<{ suggestions: Array<{ service_code: string; rationale: string; confidence: number }> }>(
@@ -235,3 +293,77 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "server_error", detail: msg.slice(0, 300) }, { status: 500 });
   }
 }
+
+// ---------------------------------------------------------------------------
+// v6.0 Phase 3 — runDiagnosticsInterpretPipeline
+// Mirrors the legacy inline Qwen interpreter; emits progress events.
+// JSON branch above unchanged.
+// ---------------------------------------------------------------------------
+
+type DiagnosticsInterpretPipelineCtx = {
+  catalog: Array<{ service_code: string; display_name: string; sub_department: string; modality: Suggestion['modality']; score: number }>;
+  userMessage: string;
+  signal?: AbortSignal;
+};
+
+type DiagnosticsInterpretResult = {
+  suggestions: Suggestion[];
+  latency_ms?: number;
+  candidates_sent: number;
+  error?: string;
+};
+
+async function runDiagnosticsInterpretPipeline(
+  ctx: DiagnosticsInterpretPipelineCtx,
+  emit: PipelineEmit,
+): Promise<DiagnosticsInterpretResult> {
+  emit({ type: 'progress', stage: 'retrieving' as Stage, msg: `Sending ${ctx.catalog.length} candidate tests` });
+
+  emit({ type: 'progress', stage: 'generating' as Stage, msg: 'Prompting the reasoning model for catalog mapping' });
+
+  try {
+    const t0 = Date.now();
+    const result = await withHeartbeat(emit, 'generating' as Stage, 'Interpreting intent', async () =>
+      qwenJson<{ suggestions: Array<{ service_code: string; rationale: string; confidence: number }> }>(
+        SYSTEM_PROMPT,
+        ctx.userMessage,
+        { timeoutMs: 45_000, signal: ctx.signal },
+      ),
+    );
+    const latency_ms = Date.now() - t0;
+
+    emit({ type: 'progress', stage: 'parsing' as Stage, msg: 'Parsing diagnostic suggestions', ms: latency_ms });
+
+    const allowedSet = new Set(ctx.catalog.map((c) => c.service_code));
+    const catalogByCode = new Map(ctx.catalog.map((c) => [c.service_code, c]));
+    const cleanSuggestions: Suggestion[] = (result.json.suggestions ?? [])
+      .filter((s) => s.service_code && allowedSet.has(s.service_code))
+      .slice(0, 15)
+      .map((s) => {
+        const c = catalogByCode.get(s.service_code)!;
+        return {
+          service_code: s.service_code,
+          display_name: c.display_name,
+          sub_department: c.sub_department,
+          modality: c.modality,
+          rationale: (s.rationale ?? '').slice(0, 100),
+          confidence: Math.max(0, Math.min(1, Number(s.confidence) || 0.5)),
+        };
+      });
+
+    return {
+      suggestions: cleanSuggestions,
+      latency_ms,
+      candidates_sent: ctx.catalog.length,
+    };
+  } catch (e) {
+    const msg = e instanceof QwenError ? `Qwen ${e.kind}` : e instanceof Error ? e.message : String(e);
+    return {
+      suggestions: [],
+      candidates_sent: ctx.catalog.length,
+      error: msg.slice(0, 200),
+    };
+  }
+}
+
+type Stage = 'expanding' | 'retrieving' | 'reranking' | 'fusing' | 'generating' | 'drafting' | 'reviewing' | 'revising' | 'finalizing' | 'parsing' | 'persisting' | 'done' | 'variants';
