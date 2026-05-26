@@ -27,6 +27,7 @@ import { isChronicIcd10 } from '@/lib/chronic-icd10-patterns';
 import { Icd10SuggestedChips } from './Icd10SuggestedChips';
 import { ExtractIcd10FromAssessmentButton } from './ExtractIcd10FromAssessmentButton';
 import { DictateButton } from './DictateButton';
+import { CollapsedSuggestions } from './CollapsedSuggestions';
 import { PrescriptionCompose } from './PrescriptionCompose';
 import type { PrescriptionLine } from './DrugRow';
 import { useRxCoherence, RxCoherencePanel, type OverrideRecord } from './RxCoherencePanel';
@@ -512,17 +513,19 @@ export function EncounterEditor({
             : undefined
         }
       >
-        <CcChipGrid
-          selected={ccChips}
-          onToggle={(label) =>
-            setCcChips((cur) =>
-              cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label],
-            )
-          }
-          readOnly={readOnly}
-          ccRankings={aiSafe.cc_chip_rankings}
-          ccAdditions={aiSafe.cc_chip_additions}
-        />
+        <CollapsedSuggestions label="Show quick options" count={CC_CHIPS.length}>
+          <CcChipGrid
+            selected={ccChips}
+            onToggle={(label) =>
+              setCcChips((cur) =>
+                cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label],
+              )
+            }
+            readOnly={readOnly}
+            ccRankings={aiSafe.cc_chip_rankings}
+            ccAdditions={aiSafe.cc_chip_additions}
+          />
+        </CollapsedSuggestions>
         <textarea
           value={cc}
           onChange={(e) => setCc(e.target.value)}
@@ -600,10 +603,12 @@ export function EncounterEditor({
           encounterId={initial.id}
           sectionKey="diagnostics"
         >
-          <DiagnosticsQuickAddStrip
-            encounterId={initial.id}
-            readOnly={readOnly}
-          />
+          <CollapsedSuggestions label="Show quick-add diagnostics">
+            <DiagnosticsQuickAddStrip
+              encounterId={initial.id}
+              readOnly={readOnly}
+            />
+          </CollapsedSuggestions>
         </Section>
       )}
 
@@ -689,16 +694,19 @@ export function EncounterEditor({
         {!readOnly && (
           <div className="mb-3 space-y-2">
             {/* v3.8 — passive Qwen ICD-10 chips above the typeahead */}
-            <Icd10SuggestedChips
-              encounterId={initial.id}
-              alreadyAddedCodes={new Set(assessmentCodes)}
-              onAdd={(item) => {
-                setAssessmentCodes((cur) =>
-                  cur.includes(item.code) ? cur : [...cur, item.code],
-                );
-                setAssessmentCodeLabels((cur) => ({ ...cur, [item.code]: item.label }));
-              }}
-            />
+            {/* v4.1.6 — hidden by default; voice-first input is the primary path */}
+            <CollapsedSuggestions label="Show ICD-10 suggestions">
+              <Icd10SuggestedChips
+                encounterId={initial.id}
+                alreadyAddedCodes={new Set(assessmentCodes)}
+                onAdd={(item) => {
+                  setAssessmentCodes((cur) =>
+                    cur.includes(item.code) ? cur : [...cur, item.code],
+                  );
+                  setAssessmentCodeLabels((cur) => ({ ...cur, [item.code]: item.label }));
+                }}
+              />
+            </CollapsedSuggestions>
             <Icd10Typeahead
               excludeCodes={assessmentCodes}
               encounterId={initial.id}
@@ -801,7 +809,12 @@ export function EncounterEditor({
         })()}
 
         {aiSafe.disposition_additions.length > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <div className="mt-3">
+            <CollapsedSuggestions
+              label="Show patient-specific disposition options"
+              count={aiSafe.disposition_additions.length}
+            >
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
             <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-700">
               <span aria-hidden>✨</span>
               For this patient
@@ -837,8 +850,9 @@ export function EncounterEditor({
               );
             })}
           </div>
+            </CollapsedSuggestions>
+          </div>
         )}
-
         {disposition === 'follow_up' && (
           <div className="mt-4 flex items-center gap-2">
             <label className="text-xs text-even-ink-600" htmlFor="follow_up_days">

@@ -224,7 +224,7 @@ export function DictateButton({
       : 'border-even-ink-200 bg-white text-even-ink-600 hover:border-even-blue-300';
 
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex flex-wrap items-start gap-2">
       <button
         type="button"
         disabled={disabled || state === 'saving' || state === 'asking'}
@@ -247,33 +247,48 @@ export function DictateButton({
           {errorMsg.length > 40 ? errorMsg.slice(0, 38) + '…' : errorMsg}
         </span>
       )}
-      {compare && <ComparePill compare={compare} />}
+      {compare && <ComparisonCard compare={compare} />}
     </span>
   );
 }
 
 /**
- * Pill that surfaces the dual-engine compare result inline next to the
- * dictate button. Shows the winner, both scores, the delta, and a
- * one-line judge reasoning on hover. Two ⬇ icons download the raw
- * Deepgram / Whisper transcripts as .txt.
+ * Detailed comparison card (v4.1.6 — replaces ComparePill).
+ *
+ * Renders ALL the data inline (no tooltip), per V's request:
+ *   ┌─ Transcription compare ─────────────────────────────────────┐
+ *   │ ✓ Whisper wins  Δ 1.4   total 5.0s                          │
+ *   │                                                             │
+ *   │ Deepgram  ▰▰▰▰▰▰▰▱▱▱  7.8/10   1.7s                         │
+ *   │ Whisper   ▰▰▰▰▰▰▰▰▰▱  9.2/10   2.4s                         │
+ *   │ Judge     qwen2.5:14b                          0.9s         │
+ *   │                                                             │
+ *   │ "Whisper captured 'Telmisartan' and the Hindi phrase        │
+ *   │ 'thoda kam ho gaya' correctly; Deepgram mis-transcribed     │
+ *   │ both."                                                      │
+ *   │                                                             │
+ *   │ ⬇ Deepgram .txt   ⬇ Whisper .txt                            │
+ *   └─────────────────────────────────────────────────────────────┘
+ *
+ * Persists below the dictate button until the next dictation in this
+ * section overwrites it.
  */
-function ComparePill({ compare }: { compare: ComparePayload }) {
+function ComparisonCard({ compare }: { compare: ComparePayload }) {
   const j = compare.judge;
-  const winner = j.winner;
   const dg = compare.deepgram;
   const w = compare.whisper;
+  const winner = j.winner;
 
   const winnerLabel =
     winner === 'deepgram'
-      ? 'Deepgram'
+      ? 'Deepgram wins'
       : winner === 'whisper'
-        ? 'Whisper'
+        ? 'Whisper wins'
         : winner === 'tie'
           ? 'Tie'
-          : '—';
+          : 'No winner';
 
-  const winnerColor =
+  const winnerTone =
     winner === 'whisper'
       ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
       : winner === 'deepgram'
@@ -282,50 +297,146 @@ function ComparePill({ compare }: { compare: ComparePayload }) {
           ? 'text-amber-700 bg-amber-50 border-amber-200'
           : 'text-even-ink-500 bg-white border-even-ink-200';
 
-  const scoreDg = j.deepgram_score !== null ? j.deepgram_score.toFixed(1) : '—';
-  const scoreW = j.whisper_score !== null ? j.whisper_score.toFixed(1) : '—';
-  const delta = j.delta_score !== null ? `Δ ${j.delta_score.toFixed(1)}` : '';
-
-  const dgMs = dg.latency_ms ? `${(dg.latency_ms / 1000).toFixed(1)}s` : '–';
-  const wMs = w.latency_ms ? `${(w.latency_ms / 1000).toFixed(1)}s` : '–';
-  const jMs = j.latency_ms ? `${(j.latency_ms / 1000).toFixed(1)}s` : '–';
-
-  const titleText = j.reasoning
-    ? `${j.reasoning} (Deepgram ${dgMs} · Whisper ${wMs} · Judge ${jMs})`
-    : `Deepgram ${dgMs} · Whisper ${wMs} · Judge ${jMs}`;
+  const fmtMs = (ms: number | null | undefined) =>
+    ms && ms > 0 ? `${(ms / 1000).toFixed(2)}s` : '–';
 
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] ${winnerColor}`}
-      title={titleText}
+    <div
+      className={`mt-2 w-full max-w-md rounded-lg border ${winnerTone} px-3 py-2 text-[11px]`}
     >
-      <span className="font-semibold uppercase tracking-wider">{winnerLabel} wins</span>
-      <span className="text-even-ink-500 font-mono tabular-nums">
-        DG {scoreDg} · W {scoreW} {delta && <span className="text-even-ink-400">· {delta}</span>}
-      </span>
-      <span className="text-even-ink-400">·</span>
-      <span className="text-even-ink-400 font-mono">{dgMs}/{wMs}</span>
+      {/* Header — winner + delta + total */}
+      <div className="flex items-center justify-between border-b border-current/10 pb-1.5">
+        <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em]">
+          <span aria-hidden>{winner === 'tie' ? '≡' : winner ? '✓' : '○'}</span>
+          {winnerLabel}
+          {j.delta_score !== null && j.delta_score > 0 && (
+            <span className="font-mono normal-case tracking-normal">
+              Δ {j.delta_score.toFixed(1)}
+            </span>
+          )}
+        </span>
+        <span className="font-mono tabular-nums text-even-ink-500">
+          total {fmtMs(compare.total_elapsed_ms)}
+        </span>
+      </div>
+
+      {/* Engine rows — score bar + numerical + latency */}
+      <div className="mt-2 space-y-1 text-even-ink-700">
+        <EngineRow
+          name="Deepgram"
+          isWinner={winner === 'deepgram'}
+          score={j.deepgram_score}
+          latency={dg.latency_ms}
+          accent="violet"
+          error={dg.error}
+          model="nova-3-medical"
+        />
+        <EngineRow
+          name="Whisper"
+          isWinner={winner === 'whisper'}
+          score={j.whisper_score}
+          latency={w.latency_ms}
+          accent="emerald"
+          error={w.error}
+          model="large-v3-turbo"
+        />
+        <div className="flex items-center gap-2 text-[10px] text-even-ink-500">
+          <span className="w-[68px] shrink-0">Judge</span>
+          <span className="flex-1 font-mono normal-case">qwen2.5:14b</span>
+          <span className="font-mono tabular-nums">{fmtMs(j.latency_ms)}</span>
+          {j.error && (
+            <span className="font-mono text-even-pink-700" title={j.error}>
+              ⚠ judge
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Judge reasoning */}
+      {j.reasoning && (
+        <p className="mt-2 italic leading-snug text-even-ink-700">
+          &ldquo;{j.reasoning}&rdquo;
+        </p>
+      )}
+
+      {/* Download row */}
       {compare.id && (
-        <>
-          <DownloadIcon
+        <div className="mt-2 flex items-center gap-3 border-t border-current/10 pt-1.5 text-[10px]">
+          <DownloadLink
             engine="deepgram"
             compareId={compare.id}
             disabled={!dg.transcript}
-            label="Deepgram"
+            label="Deepgram .txt"
           />
-          <DownloadIcon
+          <DownloadLink
             engine="whisper"
             compareId={compare.id}
             disabled={!w.transcript}
-            label="Whisper"
+            label="Whisper .txt"
           />
-        </>
+        </div>
       )}
-    </span>
+    </div>
   );
 }
 
-function DownloadIcon({
+function EngineRow({
+  name,
+  isWinner,
+  score,
+  latency,
+  accent,
+  error,
+  model,
+}: {
+  name: string;
+  isWinner: boolean;
+  score: number | null;
+  latency: number;
+  accent: 'violet' | 'emerald';
+  error: string | null;
+  model: string;
+}) {
+  const filled = score !== null ? Math.max(0, Math.min(10, Math.round(score))) : 0;
+  const empty = 10 - filled;
+  const barColor =
+    accent === 'violet'
+      ? isWinner ? 'text-violet-700' : 'text-violet-400'
+      : isWinner ? 'text-emerald-700' : 'text-emerald-400';
+  const fmtMs = (ms: number) => (ms > 0 ? `${(ms / 1000).toFixed(2)}s` : '–');
+
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className={`w-[68px] shrink-0 text-[10px] font-semibold ${isWinner ? 'text-even-navy' : 'text-even-ink-500'}`}
+        title={model}
+      >
+        {name}
+        {isWinner && <span className="ml-0.5">★</span>}
+      </span>
+      <span className={`font-mono text-[10px] tabular-nums ${barColor}`}>
+        {'▰'.repeat(filled)}
+        <span className="text-even-ink-200">{'▱'.repeat(empty)}</span>
+      </span>
+      <span className="font-mono tabular-nums text-even-ink-700">
+        {score !== null ? score.toFixed(1) : '—'}/10
+      </span>
+      <span className="ml-auto font-mono tabular-nums text-even-ink-500">
+        {fmtMs(latency)}
+      </span>
+      {error && (
+        <span
+          className="font-mono text-even-pink-700"
+          title={error}
+        >
+          ⚠
+        </span>
+      )}
+    </div>
+  );
+}
+
+function DownloadLink({
   engine,
   compareId,
   disabled,
@@ -337,27 +448,25 @@ function DownloadIcon({
   label: string;
 }) {
   const href = `/api/transcribe-compare/${compareId}/download/${engine}`;
-  const baseClass =
-    'inline-flex items-center justify-center w-4 h-4 rounded text-[9px]';
   if (disabled) {
     return (
       <span
-        className={`${baseClass} text-even-ink-300 cursor-not-allowed`}
-        title={`${label} transcript unavailable`}
+        className="inline-flex items-center gap-1 text-even-ink-300"
+        title={`${label} unavailable`}
         aria-disabled
       >
-        ⬇
+        <span aria-hidden>⬇</span> {label}
       </span>
     );
   }
   return (
     <a
       href={href}
-      className={`${baseClass} text-even-ink-500 hover:text-even-navy hover:bg-even-ink-50`}
-      title={`Download ${label} transcript`}
+      className="inline-flex items-center gap-1 text-even-ink-600 hover:text-even-navy"
+      title={`Download ${label}`}
       download
     >
-      ⬇
+      <span aria-hidden>⬇</span> {label}
     </a>
   );
 }
