@@ -24,6 +24,11 @@
 import { createHash } from 'crypto';
 import { pool } from './db';
 import { qwenJson, QwenError, QWEN_MODEL } from './qwen';
+import type { ProgressEvent } from './llm-trace/stream';
+import { withHeartbeat } from './llm-trace/heartbeat';
+
+export type PredictEmit = (ev: ProgressEvent) => void;
+const noopEmit: PredictEmit = () => {};
 import type { PlanKind } from './plan-schemas';
 import { PLAN_KINDS } from './plan-schemas';
 
@@ -594,25 +599,34 @@ async function persistPrediction(
 export async function predictPlans(
   encounterId: string,
   snapshot: EncounterSnapshot,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; emit?: PredictEmit; signal?: AbortSignal } = {},
 ): Promise<PredictionResult> {
   const hash = snapshotHash(snapshot);
+  const emit = opts.emit ?? noopEmit;
 
+  // v6.0 Phase 2C — emit a cache-hit event so the TracePanel renders
+  // even on warm cache (1-event trace ending in done).
   if (!opts.force) {
     const cached = cacheGet(hash);
     if (cached) {
+      emit({ type: 'progress', stage: 'generating' as any, msg: 'Cached prediction — no LLM call' });
       return { ...cached.result, cached: true };
     }
   }
 
   try {
+    emit({ type: 'progress', stage: 'expanding' as any, msg: 'Building encounter snapshot for the model' });
     const t0 = Date.now();
-    const { json, latency_ms, model } = await qwenJson<RawQwenResponse>(
-      PREDICTION_SYSTEM_PROMPT,
-      buildUserMessage(snapshot),
-      { timeoutMs: 12_000 }, // p99 ~5s on warm M4 — 12s ceiling covers a light cold start
+    emit({ type: 'progress', stage: 'generating' as any, msg: 'Predicting top 5 plans with the reasoning model' });
+    const { json, latency_ms, model } = await withHeartbeat(emit, 'generating' as any, 'Predicting top 5 plans', async () =>
+      qwenJson<RawQwenResponse>(
+        PREDICTION_SYSTEM_PROMPT,
+        buildUserMessage(snapshot),
+        { timeoutMs: 12_000, signal: opts.signal },
+      ),
     );
     const total_ms = Date.now() - t0;
+    emit({ type: 'progress', stage: 'parsing' as any, msg: 'Parsing predictions', ms: total_ms });
     const { predictions, severity } = normalizePredictions(json ?? {});
 
     const result: Extract<PredictionResult, { ok: true }> = {

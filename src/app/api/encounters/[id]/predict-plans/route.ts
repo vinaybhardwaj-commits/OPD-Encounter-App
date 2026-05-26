@@ -26,6 +26,8 @@ import {
   snapshotHash,
   getLatestPrediction,
 } from '@/lib/plan-prediction';
+import { makeNdjsonStream, ndjsonHeaders } from '@/lib/llm-trace/stream';
+import { openTrace } from '@/lib/llm-trace/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -109,7 +111,7 @@ export async function GET(
 // ---------------------------------------------------------------------------
 
 export async function POST(
-  _req: Request,
+  req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
   const session = await getCurrentDoctor();
@@ -130,12 +132,73 @@ export async function POST(
   if (!snapshot) {
     return NextResponse.json({ ok: false, error: 'not_found' }, { status: 404 });
   }
+  const currentHash = snapshotHash(snapshot);
+
+  const accept = req.headers.get('accept') ?? '';
+  const wantsStream = accept.includes('application/x-ndjson');
+
+  if (wantsStream) {
+    const trace = await openTrace({
+      surface: 'predict-plans',
+      encounter_id: id,
+      doctor_email: session.email,
+      request_input: { encounter_id: id, force: true },
+    });
+    const { stream, emit, close } = makeNdjsonStream();
+    const abort = new AbortController();
+    const tStart = Date.now();
+
+    (async () => {
+      try {
+        const result = await predictPlans(id, snapshot, {
+          force: true,
+          signal: abort.signal,
+          emit: (ev) => {
+            emit(ev);
+            if (ev.type === 'progress') trace.event(ev.stage, ev.msg, ev.ms);
+          },
+        });
+        emit({
+          type: 'result',
+          data: {
+            ok: true,
+            result,
+            stale: false,
+            current_snapshot_hash: currentHash,
+          },
+        });
+        emit({ type: 'done', ms: Date.now() - tStart });
+        await trace.finalise({
+          status: result.ok ? 'completed' : 'errored',
+          result_summary: result.ok
+            ? { count: result.predictions.length, severity: result.severity_estimate, latency_ms: result.latency_ms }
+            : { reason: result.reason },
+          error_message: result.ok ? undefined : result.reason,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        emit({ type: 'error', message: msg });
+        await trace.finalise({ status: 'errored', error_message: msg });
+      } finally {
+        close();
+      }
+    })();
+
+    req.signal?.addEventListener('abort', () => abort.abort(), { once: true });
+
+    return new Response(stream, {
+      headers: {
+        ...Object.fromEntries(ndjsonHeaders()),
+        'X-Trace-Id': trace.id,
+      },
+    });
+  }
 
   const result = await predictPlans(id, snapshot, { force: true });
   return NextResponse.json({
     ok: true,
     result,
     stale: false,
-    current_snapshot_hash: snapshotHash(snapshot),
+    current_snapshot_hash: currentHash,
   });
 }

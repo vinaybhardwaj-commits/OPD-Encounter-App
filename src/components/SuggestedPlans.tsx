@@ -19,6 +19,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import TracePanel, { type TraceEvent } from '@/components/llm-trace/TracePanel';
+import { consumeNdjson } from '@/lib/llm-trace/ndjson-client';
 import { PLAN_KINDS, PLAN_META, type PlanKind } from '@/lib/plan-schemas';
 
 // ---------------------------------------------------------------------------
@@ -105,36 +107,84 @@ export default function SuggestedPlans({
   const [showWhyFor, setShowWhyFor] = useState<number | null>(null);
   const debounceRef = useRef<number | null>(null);
 
+  // v6.0 Phase 2C — TracePanel state
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [traceTotalMs, setTraceTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
+
   const fetchPrediction = useCallback(
     async (force: boolean) => {
       if (disabled) return;
       setLoading(true);
       setError(null);
+      // Reset trace state for every fire.
+      setTraceEvents([]);
+      setTraceTotalMs(undefined);
+      setTraceId(null);
       try {
+        // GET = cheap cached read (no LLM). POST = force fresh — stream
+        // NDJSON so the TracePanel renders live.
+        if (!force) {
+          const res = await fetch(
+            `/api/encounters/${encodeURIComponent(encounterId)}/predict-plans`,
+            { method: 'GET', cache: 'no-store' },
+          );
+          const body = (await res.json()) as PredictionResponse;
+          if (!body.ok) { setError(body.error); return; }
+          if (body.result.ok) {
+            const filtered = body.result.predictions.filter((p) => PLAN_KIND_SET.has(p.kind));
+            setPredictions(filtered);
+            setSeverity(body.result.severity_estimate);
+            setLatencyMs(body.result.latency_ms);
+            setGeneratedAt(body.result.generated_at);
+            setStale(Boolean(body.stale));
+          } else {
+            setPredictions([]);
+            setSeverity(null);
+          }
+          return;
+        }
+
+        // Force=true — POST with Accept: application/x-ndjson for live trace.
         const res = await fetch(
           `/api/encounters/${encodeURIComponent(encounterId)}/predict-plans`,
           {
-            method: force ? 'POST' : 'GET',
+            method: 'POST',
+            headers: { Accept: 'application/x-ndjson' },
             cache: 'no-store',
           },
         );
-        const body = (await res.json()) as PredictionResponse;
-        if (!body.ok) {
-          setError(body.error);
-          return;
-        }
+        const tid = res.headers.get('X-Trace-Id');
+        if (tid) setTraceId(tid);
+        if (!res.ok) { setError(`HTTP ${res.status}`); return; }
+
+        const resultRef: { current: PredictionResponse | null } = { current: null };
+        await consumeNdjson(res, (ev) => {
+          if (ev.type === 'progress') {
+            setTraceEvents((prev) => {
+              const next = prev.map((p, i) => (i === prev.length - 1 && !p.done ? { ...p, done: true } : p));
+              return [...next, { stage: ev.stage, msg: ev.msg, ms: ev.ms, done: false, ts: Date.now() }];
+            });
+          } else if (ev.type === 'result') {
+            resultRef.current = ev.data as PredictionResponse;
+          } else if (ev.type === 'done') {
+            setTraceTotalMs(ev.ms);
+            setTraceEvents((prev) => [...prev, { stage: 'done', msg: '', ms: ev.ms, done: true, ts: Date.now() }]);
+          } else if (ev.type === 'error') {
+            setTraceEvents((prev) => [...prev, { stage: 'done', msg: ev.message, done: true, error: true, ts: Date.now() }]);
+          }
+        });
+
+        const body = resultRef.current;
+        if (!body || !body.ok) { setError(body?.error ?? 'predict_failed'); return; }
         if (body.result.ok) {
-          // Filter out any unknown plan kinds defensively.
-          const filtered = body.result.predictions.filter((p) =>
-            PLAN_KIND_SET.has(p.kind),
-          );
+          const filtered = body.result.predictions.filter((p) => PLAN_KIND_SET.has(p.kind));
           setPredictions(filtered);
           setSeverity(body.result.severity_estimate);
           setLatencyMs(body.result.latency_ms);
           setGeneratedAt(body.result.generated_at);
           setStale(Boolean(body.stale));
         } else {
-          // Soft-fail — hide the block.
           setPredictions([]);
           setSeverity(null);
         }
@@ -220,8 +270,15 @@ export default function SuggestedPlans({
         </button>
       </div>
 
-      {predictions === null && loading && (
-        <div className="text-xs text-slate-400 italic">thinking…</div>
+      {(traceEvents.length > 0 || (predictions === null && loading)) && (
+        <div className="mb-2">
+          <TracePanel
+            events={traceEvents}
+            totalMs={traceTotalMs}
+            traceId={traceId}
+            surface="predict-plans"
+          />
+        </div>
       )}
 
       {predictions !== null && (
