@@ -386,6 +386,122 @@ export const SCHEMAS: Record<PlanKind, z.ZodTypeAny> = {
   }),
 };
 
+/**
+ * Smart defaults per plan kind. Used when the doctor clicks a chip in
+ * the manual plan picker — pre-fills sensible required-field values
+ * so the row can be persisted as a draft without the doctor having to
+ * tap through every field. Doctors can edit anything in the form
+ * afterwards.
+ *
+ * Goal: minimize keystrokes for the common case. Where a required
+ * field is genuinely encounter-specific (procedure_name, body_part,
+ * indication, target_facility, etc.) we use an empty string placeholder
+ * — the form shows the * marker and the doctor knows to fill it. Strict
+ * validation only runs at submit time (see encounter-plans.ts).
+ */
+export const PLAN_DEFAULTS: Record<PlanKind, Record<string, unknown>> = {
+  discharge: {
+    red_flag_warnings: [],
+  },
+  follow_up: {
+    when: { kind: 'relative', days: 7 },
+    mode: 'in_person',
+    bring: [],
+  },
+  refer: {
+    urgency: 'routine',
+    attach_encounter: true,
+    is_external: false,
+  },
+  diagnostics: {
+    urgency: 'routine',
+    post_result_action: 'return_to_doctor',
+    lab_order_ids: [],
+  },
+  imaging: {
+    modality: 'xray',
+    body_part: '',
+    indication: '',
+    contrast: 'none',
+    is_external: false,
+    urgency: 'routine',
+    post_result_action: 'return_to_doctor',
+  },
+  medical_admission: {
+    bed_type: 'general_ward',
+    pre_admission_referrals_needed: [],
+    isolation_precautions: 'none',
+  },
+  surgical_plan: {
+    procedure_name: '',
+    urgency: 'elective',
+    preop_clearances_needed: [],
+    preop_tests_to_repeat: [],
+    blood_crossmatch_needed: false,
+    special_equipment: [],
+    implants_needed: [],
+    risks_counselled: false,
+    cost_estimate_counselled: false,
+  },
+  day_care_procedure: {
+    procedure_name: '',
+    scheduled_at: '',
+    anesthesia_type: 'none',
+    accompaniment_required: false,
+  },
+  vaccinate: {
+    vaccines: [],
+    vis_given: false,
+  },
+  emergency_transfer: {
+    target_facility: '',
+    transfer_mode: 'als_ambulance',
+    accompanying_staff: 'nurse',
+    transit_equipment: [],
+  },
+  counseling_only: {
+    topics: [],
+    summary: '',
+    materials_given: [],
+    followup_suggested: false,
+  },
+  refusal_of_advised_plan: {
+    advised_summary: '',
+    what_refused: '',
+    reason: '',
+    high_risk: false,
+  },
+  no_further_action: {
+    tracking_item: '',
+  },
+};
+
+/**
+ * Strict validator used at SUBMIT time. Returns { ok, error } so the
+ * route can short-circuit a submit attempt with a readable error list.
+ * Throws nothing.
+ */
+export function validatePlanForSubmit(
+  kind: PlanKind,
+  payload: unknown,
+): { ok: true } | { ok: false; error: string } {
+  const schema = SCHEMAS[kind];
+  if (!schema) return { ok: false, error: `Unknown plan kind: ${kind}` };
+  try {
+    schema.parse(payload);
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof z.ZodError) {
+      const msg = e.errors
+        .map((err) => `${err.path.join('.') || '(root)'}: ${err.message}`)
+        .join('; ');
+      return { ok: false, error: msg };
+    }
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+
 // Helper: validate a payload for a given kind. Returns parsed payload
 // or throws ZodError.
 export function validatePlanPayload<T = unknown>(

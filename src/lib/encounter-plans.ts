@@ -17,38 +17,14 @@
  * the plan it refused.
  */
 
-import { ZodError } from 'zod';
 import { pool } from './db';
 import {
-  validatePlanPayload,
+  validatePlanForSubmit,
   statusAfterPlan,
   PLAN_KINDS,
   type PlanKind,
 } from './plan-schemas';
 
-/**
- * Wrapper around plan-schemas' throwing validatePlanPayload so the rest
- * of this file can do `if (!ok)` instead of try/catch on every call.
- */
-function safeValidate(
-  kind: PlanKind,
-  payload: unknown,
-):
-  | { ok: true; data: Record<string, unknown> }
-  | { ok: false; error: string } {
-  try {
-    const data = validatePlanPayload<Record<string, unknown>>(kind, payload);
-    return { ok: true, data };
-  } catch (e) {
-    if (e instanceof ZodError) {
-      const msg = e.errors
-        .map((err) => `${err.path.join('.') || '(root)'}: ${err.message}`)
-        .join('; ');
-      return { ok: false, error: msg };
-    }
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -193,11 +169,9 @@ export async function createPlan(
 ): Promise<PlanRow> {
   const kind = ensurePlanKind(input.kind);
 
-  // 1. Validate payload — throw early before opening a transaction.
-  const v = safeValidate(kind, input.payload);
-  if (!v.ok) {
-    throw new Error(`Invalid plan payload for ${kind}: ${v.error}`);
-  }
+  // v5.0.2 — Draft creates accept ANY payload (including {} from manual
+  // chip-pick). Strict validation runs at submit time. This lets the
+  // doctor add a kind, then fill the form in-place.
 
   const doctorId = await resolveDoctorId(actor.email);
   const client = await pool.connect();
@@ -227,7 +201,7 @@ export async function createPlan(
       [
         input.encounterId,
         kind,
-        JSON.stringify(v.data),
+        JSON.stringify(input.payload ?? {}),
         input.predicted ?? false,
         input.prediction_confidence ?? null,
         input.source ?? 'doctor',
@@ -301,12 +275,9 @@ export async function updatePlan(
     const nextPayload = patch.payload
       ? { ...current.payload, ...patch.payload }
       : current.payload;
-    if (patch.payload) {
-      const v = safeValidate(current.kind, nextPayload);
-      if (!v.ok) {
-        throw new Error(`Invalid plan payload for ${current.kind}: ${v.error}`);
-      }
-    }
+    // v5.0.2 — Updates also accept partial payloads. Strict validation
+    // is deferred to submit. Doctors can iterate in the form without
+    // each PATCH 400ing on missing fields.
 
     // 3. Update.
     const { rows: updRows } = await client.query(
@@ -488,6 +459,27 @@ export async function submitPlans(
         FOR UPDATE`,
       [encounterId],
     );
+
+    // v5.0.2 — strict validation at submit time. Reject the whole submit
+    // if ANY plan is invalid. Reports all failures so the doctor sees
+    // every gap in one round-trip.
+    const validationErrors: Array<{ planId: string; kind: PlanKind; error: string }> = [];
+    for (const r of pending) {
+      const planRow = rowToPlan(r);
+      const v = validatePlanForSubmit(planRow.kind, planRow.payload);
+      if (!v.ok) {
+        validationErrors.push({ planId: planRow.id, kind: planRow.kind, error: v.error });
+      }
+    }
+    if (validationErrors.length > 0) {
+      await client.query('ROLLBACK').catch(() => {});
+      const summary = validationErrors
+        .map((e) => `${e.kind}: ${e.error}`)
+        .join(' | ');
+      const err = new Error(`plan_validation_failed: ${summary}`);
+      (err as Error & { validationErrors?: typeof validationErrors }).validationErrors = validationErrors;
+      throw err;
+    }
 
     const submitted: PlanRow[] = [];
     for (const r of pending) {

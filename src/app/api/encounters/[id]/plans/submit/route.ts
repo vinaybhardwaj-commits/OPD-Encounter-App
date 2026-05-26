@@ -64,10 +64,16 @@ export async function POST(
   try {
     result = await submitPlans(id, { email: session.email });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'submit_failed' },
-      { status: 500 },
-    );
+    const msg = e instanceof Error ? e.message : 'submit_failed';
+    // v5.0.2 — surface plan_validation_failed as 400 + structured detail.
+    const ve = (e as { validationErrors?: unknown }).validationErrors;
+    if (msg.startsWith('plan_validation_failed')) {
+      return NextResponse.json(
+        { ok: false, error: 'plan_validation_failed', validationErrors: ve, detail: msg },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 
   if (result.submittedPlans.length === 0) {

@@ -27,6 +27,7 @@ import SuggestedPlans from './SuggestedPlans';
 import {
   PLAN_KINDS,
   PLAN_META,
+  PLAN_DEFAULTS,
   type PlanKind,
 } from '@/lib/plan-schemas';
 
@@ -232,7 +233,11 @@ export default function PlanSection({
       );
       const body = await res.json();
       if (!body.ok) {
-        setError(body.error ?? 'submit_failed');
+        // v5.0.2 — when the server rejects a submit because of plan
+        // validation, prefer the human-readable detail over the bare
+        // error code.
+        const msg = body.detail ?? body.error ?? 'submit_failed';
+        setError(msg);
         return;
       }
       setPlans(body.submittedPlans as PlanRow[]);
@@ -362,7 +367,7 @@ export default function PlanSection({
                   <button
                     key={k}
                     type="button"
-                    onClick={() => void addPlan(k, {}, 'doctor')}
+                    onClick={() => void addPlan(k, { ...(PLAN_DEFAULTS[k] ?? {}) }, 'doctor')}
                     className="text-xs px-2.5 py-1 rounded-full border border-slate-200 bg-white text-slate-700 hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700 transition"
                     title={meta?.shortDesc}
                   >
