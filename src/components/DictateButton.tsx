@@ -22,6 +22,8 @@
  * (e.g. http context) — still posts a JSON-only row marking intent.
  */
 import { useEffect, useRef, useState } from 'react';
+import TracePanel, { type TraceEvent } from '@/components/llm-trace/TracePanel';
+import { consumeNdjson } from '@/lib/llm-trace/ndjson-client';
 
 type Section =
   | 'chief_complaint'
@@ -81,6 +83,11 @@ export function DictateButton({
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+
+  // v6.0 Phase 2B — TracePanel state
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [traceTotalMs, setTraceTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
 
   useEffect(() => () => {
     // On unmount, stop any in-progress stream
@@ -170,19 +177,53 @@ export function DictateButton({
       form.append('section', section);
       form.append('duration_seconds', String(duration));
 
+      // v6.0 Phase 2B — request NDJSON so we can stream progress events
+      // to the TracePanel. Server still returns the same payload shape via
+      // a final `result` event.
+      setTraceEvents([]);
+      setTraceTotalMs(undefined);
+      setTraceId(null);
       const res = await fetch(`/api/encounters/${encounterId}/dictations`, {
         method: 'POST',
+        headers: { Accept: 'application/x-ndjson' },
         body: form,
       });
-      const j = (await res.json()) as {
+      const tid = res.headers.get('X-Trace-Id');
+      if (tid) setTraceId(tid);
+      if (!res.ok) {
+        setState('error');
+        setErrorMsg(`HTTP ${res.status}`);
+        return;
+      }
+      type DictResult = {
         ok?: boolean;
         dictation?: { transcript_text?: string | null; transcribe_error?: string | null };
         compare?: ComparePayload;
         error?: string;
       };
-      if (!res.ok || !j.ok) {
+      const resultRef: { current: DictResult | null } = { current: null };
+      await consumeNdjson(res, (ev) => {
+        if (ev.type === 'progress') {
+          setTraceEvents((prev) => {
+            // Mark previous in-progress event as done when a new stage starts.
+            const next = prev.map((p, i) =>
+              i === prev.length - 1 && !p.done ? { ...p, done: true } : p,
+            );
+            return [...next, { stage: ev.stage, msg: ev.msg, ms: ev.ms, done: false, ts: Date.now() }];
+          });
+        } else if (ev.type === 'result') {
+          resultRef.current = ev.data as DictResult;
+        } else if (ev.type === 'done') {
+          setTraceTotalMs(ev.ms);
+          setTraceEvents((prev) => [...prev, { stage: 'done', msg: '', ms: ev.ms, done: true, ts: Date.now() }]);
+        } else if (ev.type === 'error') {
+          setTraceEvents((prev) => [...prev, { stage: 'done', msg: ev.message, done: true, error: true, ts: Date.now() }]);
+        }
+      });
+      const j = resultRef.current;
+      if (!j || !j.ok) {
         setState('error');
-        setErrorMsg(j.error ?? 'Save failed.');
+        setErrorMsg(j?.error ?? 'Save failed.');
         return;
       }
       setSeconds(duration);
@@ -245,6 +286,16 @@ export function DictateButton({
           title={errorMsg}
         >
           {errorMsg.length > 40 ? errorMsg.slice(0, 38) + '…' : errorMsg}
+        </span>
+      )}
+      {(traceEvents.length > 0 || state === 'saving') && (
+        <span className="block w-full">
+          <TracePanel
+            events={traceEvents}
+            totalMs={traceTotalMs}
+            traceId={traceId}
+            surface="transcribe-compare"
+          />
         </span>
       )}
       {compare && <ComparisonCard compare={compare} />}

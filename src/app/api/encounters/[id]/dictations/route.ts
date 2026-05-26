@@ -24,6 +24,8 @@ import { pool } from '@/lib/db';
 import { getCurrentDoctor } from '@/lib/auth';
 import { transcribeAudio } from '@/lib/transcribe';
 import { runTranscriptionCompare } from '@/lib/transcribe-compare';
+import { makeNdjsonStream, ndjsonHeaders } from '@/lib/llm-trace/stream';
+import { openTrace } from '@/lib/llm-trace/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -176,6 +178,115 @@ export async function POST(
       { ok: false, error: 'blob_upload_failed', detail: msg.slice(0, 200) },
       { status: 500 },
     );
+  }
+
+  // v6.0 Phase 2B — Accept-header branch (Q8). If the client wants
+  // streaming, open a trace + NDJSON stream and fire the compare in a
+  // fire-and-forget IIFE that emits progress events. Otherwise fall
+  // through to the existing JSON path below.
+  const accept = req.headers.get('accept') ?? '';
+  const wantsStream = accept.includes('application/x-ndjson');
+
+  if (wantsStream) {
+    const trace = await openTrace({
+      surface: 'transcribe-compare',
+      encounter_id: id,
+      doctor_email: session.email,
+      request_input: { section, duration_seconds: duration, mime },
+    });
+    const { stream, emit, close } = makeNdjsonStream();
+    const tStart = Date.now();
+
+    (async () => {
+      try {
+        const cmp = await runTranscriptionCompare(Buffer.from(audioBuffer), mime, {
+          context: `Section: ${section}. OPD encounter dictation.`,
+          emit: (ev) => {
+            emit(ev);
+            if (ev.type === 'progress') trace.event(ev.stage, ev.msg, ev.ms);
+          },
+        });
+        const transcript = cmp.winning_transcript;
+
+        const { rows } = await pool.query<{ id: string; created_at: string }>(
+          `INSERT INTO section_dictations
+             (encounter_id, section, audio_blob_url, duration_seconds, transcript_text)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, created_at`,
+          [id, section, audioBlobUrl, duration, transcript],
+        );
+        const dictationId = rows[0].id;
+        let compareId: string | null = null;
+        try {
+          const { rows: cmpRows } = await pool.query<{ id: string }>(
+            `INSERT INTO transcription_comparisons (
+               encounter_id, section_dictation_id, audio_blob_url, audio_duration_seconds, audio_mime, section,
+               deepgram_transcript, deepgram_confidence, deepgram_latency_ms, deepgram_error,
+               whisper_transcript, whisper_latency_ms, whisper_error,
+               judge_winner, judge_deepgram_score, judge_whisper_score, judge_delta_score, judge_reasoning, judge_latency_ms, judge_error,
+               total_elapsed_ms
+             ) VALUES (
+               $1, $2, $3, $4, $5, $6,
+               $7, $8, $9, $10,
+               $11, $12, $13,
+               $14, $15, $16, $17, $18, $19, $20,
+               $21
+             ) RETURNING id`,
+            [
+              id, dictationId, audioBlobUrl, duration, mime, section,
+              cmp.deepgram.transcript, cmp.deepgram.confidence ?? null, cmp.deepgram.latency_ms, cmp.deepgram.error,
+              cmp.whisper.transcript, cmp.whisper.latency_ms, cmp.whisper.error,
+              cmp.judge.winner, cmp.judge.deepgram_score, cmp.judge.whisper_score, cmp.judge.delta_score, cmp.judge.reasoning, cmp.judge.latency_ms, cmp.judge.error,
+              cmp.total_elapsed_ms,
+            ],
+          );
+          compareId = cmpRows[0].id;
+        } catch (e) {
+          console.warn('transcription_comparisons insert failed (stream branch)', e);
+        }
+
+        const payload = {
+          ok: true,
+          dictation: {
+            id: rows[0].id,
+            section,
+            audio_blob_url: audioBlobUrl,
+            duration_seconds: duration,
+            transcript_text: transcript,
+            confidence: cmp.deepgram.confidence ?? null,
+            transcribe_latency_ms: cmp.deepgram.latency_ms || null,
+            transcribe_error: cmp.deepgram.error,
+            created_at: rows[0].created_at,
+          },
+          compare: {
+            id: compareId,
+            deepgram: cmp.deepgram,
+            whisper: cmp.whisper,
+            judge: cmp.judge,
+            total_elapsed_ms: cmp.total_elapsed_ms,
+          },
+        };
+        emit({ type: 'result', data: payload });
+        emit({ type: 'done', ms: Date.now() - tStart });
+        await trace.finalise({
+          status: 'completed',
+          result_summary: { winner: cmp.judge.winner, total_elapsed_ms: cmp.total_elapsed_ms },
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        emit({ type: 'error', message: msg });
+        await trace.finalise({ status: 'errored', error_message: msg });
+      } finally {
+        close();
+      }
+    })();
+
+    return new Response(stream, {
+      headers: {
+        ...Object.fromEntries(ndjsonHeaders()),
+        'X-Trace-Id': trace.id,
+      },
+    });
   }
 
   // 2. Dual-engine compare — Deepgram + Whisper in parallel, qwen judge.

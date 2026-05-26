@@ -18,6 +18,10 @@
 import { transcribeAudio } from './transcribe';
 import { transcribeWithWhisper } from './whisper';
 import { qwenJson, QwenError } from './qwen';
+import type { ProgressEvent } from './llm-trace/stream';
+
+export type CompareEmit = (ev: ProgressEvent) => void;
+const noopEmit: CompareEmit = () => {};
 
 export interface EngineResult {
   transcript: string | null;
@@ -81,15 +85,36 @@ Output JSON only.`;
 export async function runTranscriptionCompare(
   audio: Buffer | Uint8Array,
   contentType: string,
-  opts: { context?: string } = {},
+  opts: { context?: string; emit?: CompareEmit; signal?: AbortSignal } = {},
 ): Promise<CompareResult> {
   const t0 = Date.now();
+  const emit = opts.emit ?? noopEmit;
 
-  // 1. Fire both engines in parallel.
-  const [dgRaw, wRaw] = await Promise.all([
-    transcribeAudio(audio, contentType),
-    transcribeWithWhisper(audio, contentType),
-  ]);
+  // v6.0 Phase 2B — emit at both engine starts. Promise.all fires them
+  // in parallel; the events arrive interleaved by completion order.
+  emit({ type: 'progress', stage: 'transcribing' as any, msg: 'Sending audio to Deepgram nova-3-medical' });
+  emit({ type: 'progress', stage: 'transcribing' as any, msg: 'Sending audio to Mac Mini Whisper large-v3-turbo (parallel)' });
+
+  // 1. Fire both engines in parallel. Wrap each so we can emit when
+  //    each individually completes (Promise.all blocks on the slowest;
+  //    we want the doctor to see Deepgram return first).
+  const dgP = transcribeAudio(audio, contentType).then((r) => {
+    if (r.ok) {
+      emit({ type: 'progress', stage: 'expanding' as any, msg: `Deepgram returned in ${(r.latency_ms / 1000).toFixed(1)}s` });
+    } else {
+      emit({ type: 'progress', stage: 'expanding' as any, msg: `Deepgram failed: ${String(r.error).slice(0, 80)}` });
+    }
+    return r;
+  });
+  const wP = transcribeWithWhisper(audio, contentType).then((r) => {
+    if (r.ok) {
+      emit({ type: 'progress', stage: 'retrieving' as any, msg: `Whisper returned in ${(r.latency_ms / 1000).toFixed(1)}s` });
+    } else {
+      emit({ type: 'progress', stage: 'retrieving' as any, msg: `Whisper failed: ${String(r.error).slice(0, 80)}` });
+    }
+    return r;
+  });
+  const [dgRaw, wRaw] = await Promise.all([dgP, wP]);
 
   const deepgram: EngineResult = dgRaw.ok
     ? {
@@ -161,6 +186,7 @@ export async function runTranscriptionCompare(
   }
 
   // 3. Both succeeded — ask qwen2.5:14b to judge.
+  emit({ type: 'progress', stage: 'drafting' as any, msg: 'qwen scoring both transcripts (1-10) and picking a winner' });
   let judge: JudgeResult;
   try {
     const result = await qwenJson<{
