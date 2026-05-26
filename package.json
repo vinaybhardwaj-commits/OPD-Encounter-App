@@ -12,6 +12,7 @@
     "@vercel/blob": "2.3.3",
     "@vercel/postgres": "0.10.0",
     "jose": "5.9.6",
+    "lucide-react": "0.383.0",
     "next": "15.5.18",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "4.10.38",

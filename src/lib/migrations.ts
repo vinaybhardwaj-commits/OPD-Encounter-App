@@ -1715,6 +1715,51 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_epa_plan ON encounter_plan_audits(plan_id, at DESC);
     `,
   },
+  {
+    version: 39,
+    name: 'v6_0_llm_traces',
+    sql: `
+      -- v6.0 — Forensic trace table for every LLM-firing route.
+      -- See LLM-TRACE-PANEL-PRD.md §5.6.
+      --
+      -- One row per pipeline run, status tracked from 'in_progress' to
+      -- terminal ('completed' | 'errored' | 'aborted'). Events array
+      -- accumulates the full NDJSON event stream for forensic replay.
+      --
+      -- Retention forever (decision Q2). No cron sweep.
+      -- Encounter / patient FKs are ON DELETE SET NULL so deleting a
+      -- patient or encounter doesn't lose the audit trail — the trace
+      -- becomes orphan but readable.
+
+      CREATE TABLE IF NOT EXISTS llm_traces (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        surface         TEXT NOT NULL,
+        encounter_id    UUID REFERENCES encounters(id) ON DELETE SET NULL,
+        patient_id      UUID REFERENCES patients(id) ON DELETE SET NULL,
+        doctor_email    TEXT,
+        request_input   JSONB,
+        events          JSONB NOT NULL DEFAULT '[]'::jsonb,
+        result_summary  JSONB,
+        model_calls     JSONB,
+        total_ms        INT,
+        status          TEXT NOT NULL DEFAULT 'in_progress'
+                        CHECK (status IN ('in_progress','completed','errored','aborted')),
+        error_message   TEXT,
+        started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at    TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_llm_traces_surface_started
+        ON llm_traces(surface, started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_llm_traces_encounter
+        ON llm_traces(encounter_id, started_at DESC)
+        WHERE encounter_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_llm_traces_patient
+        ON llm_traces(patient_id, started_at DESC)
+        WHERE patient_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_llm_traces_doctor
+        ON llm_traces(doctor_email, started_at DESC);
+    `,
+  },
 ];
 
 /**

@@ -58,7 +58,7 @@ export type QwenJsonResult<T = unknown> = {
 export async function qwenJson<T = unknown>(
   systemMessage: string,
   userMessage: string,
-  opts: { timeoutMs?: number; model?: string; temperature?: number } = {},
+  opts: { timeoutMs?: number; model?: string; temperature?: number; signal?: AbortSignal } = {},
 ): Promise<QwenJsonResult<T>> {
   const base = process.env.LLM_BASE_URL;
   if (!base) {
@@ -73,6 +73,17 @@ export async function qwenJson<T = unknown>(
   const url = `${base.replace(/\/+$/, '')}/chat/completions`;
   const controller = new AbortController();
   const tid = setTimeout(() => controller.abort(), timeoutMs);
+  // v6.0 (Q5) — if the caller passed an AbortSignal (e.g. from a route
+  // whose NDJSON stream closed because the client disconnected), wire
+  // it through. Either timeout or external abort cancels the Mac Mini
+  // fetch and frees the qwen call.
+  if (opts.signal) {
+    if (opts.signal.aborted) {
+      controller.abort();
+    } else {
+      opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
 
   const t0 = Date.now();
   let res: Response;
