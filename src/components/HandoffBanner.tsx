@@ -84,7 +84,11 @@ export function HandoffBanner({
 }
 
 function firstName(full: string): string {
-  return (full.split(/\s+/)[0] || full).replace(/^Dr\.?\s+|^Nurse\s+/i, '');
+  // v5.0.3 — strip 'Dr.'/'Dr'/'Nurse' prefix FIRST, then split. The
+  // previous order split first and tried to strip a 'Dr.' token that
+  // had no trailing whitespace, leaving 'Dr.' as the result.
+  const stripped = (full || '').replace(/^(Dr\.?|Nurse)\s*/i, '').trim();
+  return stripped.split(/\s+/)[0] || stripped || full;
 }
 
 function relativeAge(iso: string): string {

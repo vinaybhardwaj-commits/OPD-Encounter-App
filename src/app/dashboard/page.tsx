@@ -24,7 +24,12 @@ import { QueueLive } from '@/components/QueueLive';
 export const dynamic = 'force-dynamic';
 
 function firstName(full: string): string {
-  return (full.split(/\s+/)[0] || full).replace(/^Dr\.?\s+/i, '');
+  // v5.0.3 — strip 'Dr.'/'Dr' prefix FIRST, then split. The previous
+  // order split first and tried to strip a 'Dr.' token that had no
+  // trailing whitespace, leaving 'Dr.' as the result and rendering
+  // 'Good day, Dr. Dr.' on the dashboard.
+  const stripped = (full || '').replace(/^Dr\.?\s*/i, '').trim();
+  return stripped.split(/\s+/)[0] || stripped || full;
 }
 
 function fmtTime(iso: string | null): string {
