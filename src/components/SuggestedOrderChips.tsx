@@ -11,6 +11,8 @@
  * Failure-silent per PRD: no chips, no toast, just hides.
  */
 import { useEffect, useState } from 'react';
+import TracePanel, { type TraceEvent } from '@/components/llm-trace/TracePanel';
+import { consumeNdjson } from '@/lib/llm-trace/ndjson-client';
 import type { CatalogRow } from './DiagnosticSearch';
 
 type Suggestion = {
@@ -65,15 +67,60 @@ export function SuggestedOrderChips({
   const [loading, setLoading] = useState(true);
   const [cached, setCached] = useState(false);
 
+  // v6.0 Phase 2D — TracePanel state. Renders only when the server
+  // returns NDJSON (i.e. the cache missed and qwen had to fire).
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [traceTotalMs, setTraceTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
+
   useEffect(() => {
     let cancel = false;
     (async () => {
       try {
-        const res = await fetch(`/api/encounters/${encounterId}/suggest-orders`);
-        const json = await res.json();
-        if (!cancel && json.ok) {
-          setPayload(json.payload);
-          setCached(json.cached);
+        const res = await fetch(`/api/encounters/${encounterId}/suggest-orders`, {
+          headers: { Accept: 'application/x-ndjson' },
+        });
+        if (!res.ok) {
+          if (!cancel) setLoading(false);
+          return;
+        }
+        const tid = res.headers.get('X-Trace-Id');
+        if (tid && !cancel) setTraceId(tid);
+        const ct = res.headers.get('content-type') ?? '';
+
+        if (ct.includes('application/x-ndjson')) {
+          // Streaming path — qwen is firing. Render the trace panel.
+          type ResultBody = { ok?: boolean; cached?: boolean; payload?: Payload };
+          const resultRef: { current: ResultBody | null } = { current: null };
+          await consumeNdjson(res, (ev) => {
+            if (cancel) return;
+            if (ev.type === 'progress') {
+              setTraceEvents((prev) => {
+                const next = prev.map((p, i) => (i === prev.length - 1 && !p.done ? { ...p, done: true } : p));
+                return [...next, { stage: ev.stage, msg: ev.msg, ms: ev.ms, done: false, ts: Date.now() }];
+              });
+            } else if (ev.type === 'result') {
+              resultRef.current = ev.data as ResultBody;
+            } else if (ev.type === 'done') {
+              setTraceTotalMs(ev.ms);
+              setTraceEvents((prev) => [...prev, { stage: 'done', msg: '', ms: ev.ms, done: true, ts: Date.now() }]);
+            } else if (ev.type === 'error') {
+              setTraceEvents((prev) => [...prev, { stage: 'done', msg: ev.message, done: true, error: true, ts: Date.now() }]);
+            }
+          });
+          if (cancel) return;
+          const body = resultRef.current;
+          if (body && body.ok) {
+            setPayload(body.payload ?? null);
+            setCached(Boolean(body.cached));
+          }
+        } else {
+          // Plain JSON cache-hit path.
+          const json = await res.json();
+          if (!cancel && json.ok) {
+            setPayload(json.payload);
+            setCached(json.cached);
+          }
         }
       } finally {
         if (!cancel) setLoading(false);
@@ -83,6 +130,22 @@ export function SuggestedOrderChips({
   }, [encounterId]);
 
   if (loading) {
+    // Show the TracePanel only if we've started receiving NDJSON events
+    // (i.e. server isn't serving from cache). Otherwise show the legacy
+    // italic line — the cache hit will land in <100ms and the loader
+    // disappears.
+    if (traceEvents.length > 0) {
+      return (
+        <div>
+          <TracePanel
+            events={traceEvents}
+            totalMs={traceTotalMs}
+            traceId={traceId}
+            surface="suggest-orders"
+          />
+        </div>
+      );
+    }
     return (
       <div className="rounded-md border border-even-blue-100 bg-even-blue-50/30 px-3 py-2 text-[11px] italic text-even-blue-700">
         Suggesting orders from this encounter&apos;s context…
