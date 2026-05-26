@@ -11,10 +11,6 @@
     {
       "path": "/api/lab-orders/sweep",
       "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/admin/demo-replay",
-      "schedule": "30 23 * * *"
     }
   ]
 }

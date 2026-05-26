@@ -45,7 +45,13 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const headerSecret = req.headers.get('x-cron-secret');
   const expectedSecret = process.env.CRON_SECRET;
-  const vercelCronAuth = req.headers.get('authorization')?.startsWith('Bearer ') ?? false;
+  // Vercel cron sends `x-vercel-cron: 1` (stripped from external requests).
+  // It used to also send Authorization: Bearer but no longer does reliably.
+  // v4.1.5 — accept either signal.
+  const vercelCronHeader = req.headers.get('x-vercel-cron');
+  const vercelCronAuth =
+    (req.headers.get('authorization')?.startsWith('Bearer ') ?? false) ||
+    !!vercelCronHeader;
 
   if (!vercelCronAuth) {
     const session = await getCurrentUser();
