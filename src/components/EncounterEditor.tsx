@@ -43,6 +43,7 @@ import { SubmitConfirmModal } from './SubmitConfirmModal';
 import { FlagHandoffModal } from './FlagHandoffModal';
 import { DdxOnDemand } from './DdxOnDemand';
 import { DiagnosticsQuickAddStrip } from './DiagnosticsQuickAddStrip';
+import PlanSection from './PlanSection';
 
 type Vitals = {
   bp_sys?: number | '';
@@ -759,135 +760,15 @@ export function EncounterEditor({
         <RxCoherencePanel state={rxCoherence} mode="inline" />
       </Section>
 
-      <Section id="enc-section-plan" n={7} label="Plan" required>
-        {(() => {
-          // PH.4: re-order the 6 standard buttons so the AI-recommended
-          // one is leftmost, and stamp it with a violet dot.
-          const aiRec = aiSafe.disposition_recommendation;
-          const ordered = aiRec
-            ? [
-                ...DISPOSITIONS.filter((d) => d.value === aiRec),
-                ...DISPOSITIONS.filter((d) => d.value !== aiRec),
-              ]
-            : DISPOSITIONS;
-          return (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {ordered.map((d) => {
-                const selected = disposition === d.value && !dispositionLabel;
-                const isAi = aiRec === d.value;
-                return (
-                  <button
-                    key={d.value}
-                    type="button"
-                    disabled={readOnly}
-                    onClick={() => {
-                      setDisposition(d.value);
-                      setDispositionLabel(null);
-                    }}
-                    aria-pressed={selected}
-                    title={d.hint}
-                    className={`relative rounded-lg px-3 py-2 text-left text-xs font-semibold transition disabled:cursor-not-allowed ring-1 ${
-                      selected
-                        ? 'bg-even-blue text-white ring-even-blue shadow-sm'
-                        : 'bg-white text-even-navy ring-even-ink-200 hover:ring-even-blue-300'
-                    }`}
-                  >
-                    {isAi && (
-                      <span
-                        aria-label="AI-recommended"
-                        className={`absolute right-1.5 top-1.5 inline-block h-1.5 w-1.5 rounded-full ${
-                          selected ? 'bg-white' : 'bg-violet-500'
-                        }`}
-                      />
-                    )}
-                    {d.label}
-                  </button>
-                );
-              })}
-            </div>
-          );
-        })()}
-
-        {aiSafe.disposition_additions.length > 0 && (
-          <div className="mt-3">
-            <CollapsedSuggestions
-              label="Show patient-specific disposition options"
-              count={aiSafe.disposition_additions.length}
-            >
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-            <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-700">
-              <span aria-hidden>✨</span>
-              For this patient
-            </span>
-            {aiSafe.disposition_additions.map((label) => {
-              const selected = dispositionLabel === label;
-              return (
-                <button
-                  key={`disp-add-${label}`}
-                  type="button"
-                  disabled={readOnly}
-                  onClick={() => {
-                    // Patient-specific dispositions map to 'refer' under
-                    // the hood (most are specialist hand-offs), with
-                    // the override label persisted for the PDF.
-                    setDisposition('refer');
-                    setDispositionLabel(label);
-                    // If the addition looks like "Refer to Dr. X · Spec",
-                    // pre-fill the referral target with the part after
-                    // "Refer to " so the doctor doesn't have to retype.
-                    const m = /^Refer to\s+(.+)$/i.exec(label);
-                    if (m) setReferralTarget(m[1]);
-                  }}
-                  aria-pressed={selected}
-                  className={`rounded-full px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed ${
-                    selected
-                      ? 'bg-violet-600 text-white shadow-sm'
-                      : 'bg-violet-50 text-violet-900 ring-1 ring-violet-300 hover:ring-violet-500'
-                  }`}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-            </CollapsedSuggestions>
-          </div>
-        )}
-        {disposition === 'follow_up' && (
-          <div className="mt-4 flex items-center gap-2">
-            <label className="text-xs text-even-ink-600" htmlFor="follow_up_days">
-              Follow up in
-            </label>
-            <input
-              id="follow_up_days"
-              type="number"
-              min={1}
-              max={365}
-              disabled={readOnly}
-              value={followUpDays}
-              onChange={(e) => setFollowUpDays(e.target.value === '' ? '' : Number(e.target.value))}
-              className="w-24 rounded-md border border-even-ink-200 bg-white px-3 py-1.5 text-sm text-even-navy focus:border-even-blue focus:outline-none focus:ring-2 focus:ring-even-blue-100"
-            />
-            <span className="text-xs text-even-ink-500">days</span>
-          </div>
-        )}
-        {disposition === 'refer' && (
-          <div className="mt-4">
-            <label className="mb-1 block text-xs text-even-ink-600" htmlFor="referral_target">
-              Refer to
-            </label>
-            <input
-              id="referral_target"
-              type="text"
-              disabled={readOnly}
-              value={referralTarget}
-              onChange={(e) => setReferralTarget(e.target.value)}
-              placeholder="e.g., Cardiology · Dr. Iyer"
-              className="w-full rounded-md border border-even-ink-200 bg-white px-3 py-1.5 text-sm text-even-navy focus:border-even-blue focus:outline-none focus:ring-2 focus:ring-even-blue-100"
-            />
-          </div>
-        )}
-      </Section>
+      <PlanSection
+        encounterId={initial.id}
+        n={7}
+        encounterStatus={initial.status}
+        predictionTrigger={
+          ccChips.length + cc.length + exam.length + assessment.length + assessmentCodes.length
+        }
+        onSubmitted={() => router.refresh()}
+      />
 
       <TranscriptViewer ref={transcriptRef} encounterId={initial.id} />
 
@@ -898,7 +779,7 @@ export function EncounterEditor({
               {submitError && (
                 <p className="text-xs text-even-pink-700">{submitError}</p>
               )}
-              {!disposition && !submitGated && (
+              {false && (
                 <p className="text-xs text-even-ink-500">
                   Pick a disposition to submit.
                 </p>
@@ -943,7 +824,7 @@ export function EncounterEditor({
               <button
                 type="button"
                 onClick={onSubmit}
-                disabled={!disposition || submitting || submitGated}
+                disabled={true}
                 className="rounded-lg bg-even-blue px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-even-blue-700 focus:outline-none focus:ring-2 focus:ring-even-blue-100"
                 title={submitGated ? 'Encounter is paused — resume first.' : ''}
               >
